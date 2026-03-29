@@ -1,6 +1,5 @@
 {
   "name": "taskflow-local",
-  "description": "Local marketplace for taskflow plugin",
   "owner": {
     "name": "Ognjen Popovic"
   },
