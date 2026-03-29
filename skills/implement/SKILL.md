@@ -12,8 +12,9 @@ All behavior is driven by `.claude/taskflow-config.json` — no provider-specifi
 ## Invocation
 
 ```
-/taskflow:implement              # Implement next pending batch
+/taskflow:implement              # Implement next available batch
 /taskflow:implement batch-2      # Implement a specific batch by name
+/taskflow:implement --unlock batch-2   # Release a crashed session's claim on a batch
 ```
 
 ---
@@ -30,7 +31,7 @@ Before starting, verify:
 
 3. **Developer identity is in Claude memory** (full name + provider user ID)
 
-4. **State file exists** at `<config.output_dir>/state.<developer_slug>.json` — if not, stop:
+4. **Index file exists** at `<config.output_dir>/state.<developer_slug>.json` — if not, stop:
    > "No triage state found. Run `/taskflow:triage` first."
 
 5. **`gh` CLI is authenticated** and available (`gh auth status`)
@@ -45,57 +46,72 @@ Follow these steps in order. Do not skip or reorder steps.
 
 ### Step 1: Load State and Validate
 
-1. Read `.claude/taskflow-config.json` — parse fully. Store the entire config object for use throughout the workflow.
+1. Read `.claude/taskflow-config.json` — parse fully. Store the entire config object.
 
 2. Read developer identity from Claude memory:
-   - Full name (e.g., "Ognjen Popovic")
-   - Provider user ID
-   - Derive `developer_slug`: first name, lowercase (e.g., "ognjen")
+   - Full name, provider user ID, derive `developer_slug`
 
-3. Read the state file at:
+3. **Handle `--unlock` argument:**
 
-   ```
-   <config.output_dir>/state.<developer_slug>.json
-   ```
+   If the invocation is `/taskflow:implement --unlock <batch-key>`:
+   - Check if `<config.output_dir>/batches/<batch-key>.lock/` exists
+   - If it does not exist: print "Batch `<batch-key>` is not locked." and stop.
+   - If it exists: run `rmdir <config.output_dir>/batches/<batch-key>.lock/`
+   - Print: "Batch `<batch-key>` unlocked. Run `/taskflow:implement` to claim it."
+   - Stop. Do not proceed to implementation.
 
-   - If the file does not exist, stop and print:
-     > "No triage state found. Run /taskflow:triage first."
+4. Read the index file at `<config.output_dir>/state.<developer_slug>.json`:
+   - If the file does not exist, stop: "No triage state found. Run `/taskflow:triage` first."
+   - Parse the index to get the batch list and task classifications.
 
-4. Determine the target batch:
-   - If a batch name was passed as an argument (e.g., `/taskflow:implement batch-2`): use that batch. If it does not exist in the state file, stop and list available batches.
-   - If no argument was passed: find the first batch with `status: "pending"` (by batch key order: batch-1 before batch-2, etc.).
-   - If no pending batches exist, stop and print:
-     > "No pending batches. All work is either in-progress, complete, or not yet triaged."
+5. **Claim a batch:**
 
-5. Read plan files for each task in the target batch:
+   **If a batch name was passed** (e.g., `/taskflow:implement batch-2`):
+   - If that batch does not exist in the index, stop and list available batches.
+   - Read `<config.output_dir>/batches/batch-2.json` — if `status` is `"pr-created"` or `"done"`, stop: "Batch 2 is already complete."
+   - Check if `<config.output_dir>/batches/batch-2.lock/` exists:
+     - If yes — this is a **resume scenario**. Read `batch-2.json`:
+       - If `status` is `"in-progress"`: ask: "Batch 2 is in progress (claimed by a previous session). Resume from where it left off? [Y/n]"
+         - If yes: skip claim, proceed to Step 2 starting from the first task with `status` of `"planned"` or `"in-progress"` (not `"committed"`)
+         - If no: stop. Tell the developer to use `--unlock batch-2` first.
+       - If `status` is `"pending"`: ask: "Batch 2 has a stale lock. Remove it and reclaim? [Y/n]"
+         - If yes: `rmdir` the lock, then `mkdir` to reclaim, proceed normally.
+         - If no: stop.
+     - If no: run `mkdir <config.output_dir>/batches/batch-2.lock/`. If mkdir fails, stop: "Batch 2 was just claimed by another session."
+   - Read `batch-2.json` and proceed.
+
+   **If no argument was passed** (`/taskflow:implement`):
+   - Iterate through batches in key order (batch-1, batch-2, ...):
+     - If `<config.output_dir>/batches/<batch-key>.lock/` exists → skip (claimed)
+     - Read `<config.output_dir>/batches/<batch-key>.json` — if `status` is `"pr-created"` or `"done"` → skip (complete)
+     - Try: `mkdir <config.output_dir>/batches/<batch-key>.lock/`
+     - If mkdir succeeds → claimed. Read the batch file and proceed.
+     - If mkdir fails (race condition) → skip, try next batch.
+   - If no batch could be claimed: stop: "No available batches. All are either claimed, complete, or not yet triaged."
+
+6. Read the task classifications from the index for each task in the claimed batch.
+
+7. Read plan files for each task in the claimed batch:
 
    ```
    <config.output_dir>/tasks/<task-id>.md
    ```
 
-   For each plan file:
-   - If the file does not exist, warn: "Plan file missing for task `<task-id>`. Skipping this task — re-run /taskflow:triage to regenerate it."
-   - If the file exists, read it fully.
+   - If a plan file does not exist, warn: "Plan file missing for task `<task-id>`. Skipping — re-run /taskflow:triage to regenerate."
+   - If it exists, read it fully.
 
-6. Validate that referenced files still exist:
-   - For each file listed in the plan's "Files Involved" section, check whether the path exists in the repo.
-   - If one or more files have moved or been deleted, warn the developer:
-     > "Warning: `<path>` no longer exists. This plan may be stale. Consider re-running /taskflow:triage --force for this task before implementing."
-   - Offer to continue anyway or abort. Wait for the developer's response before proceeding.
+8. Validate that referenced files still exist (check "Files Involved" paths in plan files).
 
-7. Check task status in the provider for each task in the batch:
-   - Call `get_task(id)` for each task ID.
-   - If a task's provider status is no longer `todo` (e.g., it moved to `in_review`, `done`, `cancelled`), skip it and note:
-     > "Task `<name>` (`<id>`) is now `<status>` in the provider — skipping."
-   - Update that task's `status` to `"stale"` in the state file.
-   - If ALL tasks in the batch are stale or invalid, stop and mark the batch as `"stale"` in the state file.
+9. Check task status in the provider:
+   - Call `get_task(id)` for each task.
+   - If a task is no longer `todo`, skip it. Update its status to `"stale"` in the **batch file**.
+   - If ALL tasks are stale, stop. Mark the batch as `"stale"` in its batch file. Remove the lock: `rmdir <config.output_dir>/batches/<batch-key>.lock/`.
 
-8. **Move all valid batch tasks to "in progress" in the provider:**
-   - For each task that passed validation (not stale, not skipped), call `update_task(id, {status: "in_progress"})`.
-   - Update the task's `status` to `"in-progress"` in the local state file.
-   - Update the batch's `status` to `"in-progress"` in the local state file.
-   - Write the updated state file to disk immediately, before beginning implementation.
-   - If a status update fails for a task, note it and continue — do not block implementation.
+10. **Move valid tasks to "in progress" in the provider:**
+    - Call `update_task(id, {status: "in_progress"})` for each valid task.
+    - Update the task's `status` to `"in-progress"` in the **batch file**.
+    - Update the batch's `status` to `"in-progress"` in the **batch file**.
+    - Write the updated **batch file** to disk immediately.
 
 ---
 
@@ -119,7 +135,7 @@ For each task where `classification.confidence` is `"low"`:
 
 4. Based on the response:
    - `(a)`: Proceed with implementation, note it was flagged low-confidence.
-   - `(b)`: Exclude this task from the current run. Leave its state as `"planned"` in the state file. Continue with remaining tasks. If all tasks in the batch are skipped, stop.
+   - `(b)`: Exclude this task from the current run. Leave its state as `"planned"` in the batch file. Continue with remaining tasks. If all tasks in the batch are skipped, stop.
    - `(c)`: Incorporate the context the developer provides, update the plan file's "Approach" and "Risks / Unknowns" sections with the new information, then proceed.
 
 ---
@@ -157,7 +173,7 @@ For each task where `classification.confidence` is `"low"`:
      ```
    - The worktree directory is created as a sibling of the repo root (e.g., `/path/to/dev/<config.project_name>-fix-cart-discount-totals`).
 
-3. Update the state file immediately after worktree creation:
+3. Confirm the branch name. The index contains a `suggested_branch` for the batch — use it unless there is a naming conflict, then adjust. Write the confirmed `branch` to the batch file immediately after worktree creation:
    - Set the batch's `branch` field to `<branch-name>`
    - Set the batch's `status` to `"in-progress"`
 
@@ -195,9 +211,9 @@ Re-read the plan file for the task. Understand:
 - The step-by-step approach
 - Any risks or unknowns noted
 
-#### 4b. Update task status in state file
+#### 4b. Update task status in batch file
 
-Set the task's `status` to `"in-progress"` in the state file.
+Set the task's `status` to `"in-progress"` in the batch file.
 
 #### 4c. Implement the changes
 
@@ -250,12 +266,12 @@ Commit message rules:
   - `feat: add bloom color filter to plant finder`
   - `chore: update cart empty state copy`
 
-#### 4f. Record commit SHA in state file
+#### 4f. Record commit SHA in batch file
 
 After a successful commit:
 
 - Run `git rev-parse HEAD` to get the SHA
-- Append the SHA to the task's `commit_shas` array in the state file
+- Append the SHA to the task's `commit_shas` array in the batch file
 - Set the task's `status` to `"committed"`
 
 Repeat steps 4a–4f for each remaining task in the batch. All tasks commit to the same branch.
@@ -277,7 +293,7 @@ After all tasks in the batch are committed, run full verification from the workt
 - Do NOT push the branch
 - Report the exact failure output to the developer
 - Attempt to fix the failure. If you fix it, re-commit the fix and re-run all checks.
-- If you cannot fix it after two attempts, stop and keep the batch status as `"in-progress"` in the state file. Ask the developer for guidance.
+- If you cannot fix it after two attempts, stop and keep the batch status as `"in-progress"` in the batch file. Ask the developer for guidance.
 
 Only proceed to Step 6 when all checks pass cleanly.
 
@@ -364,7 +380,7 @@ For each task in the batch (including any that were already committed from a pre
 
 3. Capture the PR URL from the `gh` output.
 
-4. Update the state file:
+4. Update the batch file:
    - Set `pr_url` on each task in the batch to the PR URL
    - Set the batch's `status` to `"pr-created"`
 
@@ -406,15 +422,15 @@ For each task in the batch (including any that were already committed from a pre
 
 If the process fails partway through a batch:
 
-- Already-committed tasks remain in their branches with `status: "committed"` in the state file
-- The batch's `status` stays as `"in-progress"`
-- Re-running `/taskflow:implement <batch-name>` will detect committed tasks (non-null `commit_shas`) and skip re-implementing them — it resumes from the first uncommitted task
+- Already-committed tasks remain in their branches with `status: "committed"` in the batch file
+- The batch's `status` stays as `"in-progress"` and the lock directory remains
+- Re-running `/taskflow:implement <batch-name>` will detect the lock and offer to resume. It will detect committed tasks (non-null `commit_shas`) and skip re-implementing them — it resumes from the first uncommitted task.
 
 ### Test failures that block push
 
 If Step 5 (full verification) fails:
 
-- Keep batch status as `"in-progress"`
+- Keep batch status as `"in-progress"` in the batch file
 - Do not push
 - Report the exact failure to the developer
 - Keep the worktree intact for the developer to inspect
@@ -423,41 +439,58 @@ If Step 5 (full verification) fails:
 
 - Proceed with all code changes and the PR
 - Print: "Provider unavailable — skipped status updates. Move tasks to 'in review' manually and add the PR URL as a comment."
-- Record the PR URL in the state file as normal
+- Record the PR URL in the batch file as normal
 
 ### Worktree already exists (from previous aborted run)
 
 If the worktree directory already exists:
 
+- The lock directory also exists from the previous run.
 - Confirm with the developer before proceeding: "Worktree at `../<config.project_name>-<branch-name>` already exists. Resume from where we left off?"
 - If yes: skip worktree creation and install command, proceed to Step 4 starting from the first task with `status: "planned"` or `"in-progress"` (not `"committed"`)
-- If no: remove the existing worktree (`git worktree remove --force ../<config.project_name>-<branch-name>`), then start fresh
+- If no: remove the existing worktree (`git worktree remove --force ../<config.project_name>-<branch-name>`), remove the lock (`rmdir <config.output_dir>/batches/<batch-key>.lock/`), then start fresh
+
+### Batch claim with existing lock (resume scenario)
+
+If `/taskflow:implement batch-N` is called and `batch-N.lock/` already exists:
+
+- Read `batch-N.json` — check the `status`:
+  - If `"in-progress"`: ask the developer: "Batch N is in progress (claimed by a previous session). Resume from where it left off? [Y/n]"
+    - If yes: skip the mkdir step, proceed to Step 2 starting from the first task with `status` of `"planned"` or `"in-progress"` (not `"committed"`)
+    - If no: stop. Tell the developer to use `--unlock batch-N` first.
+  - If `"pending"`: the lock is stale (claim happened but no work started). Ask: "Batch N has a stale lock. Remove it and reclaim? [Y/n]"
+    - If yes: `rmdir` the lock, then `mkdir` to reclaim, proceed normally.
+    - If no: stop.
+  - If `"pr-created"`: stop: "Batch N is already complete."
 
 ---
 
-## State File — Fields Written by `/taskflow:implement`
+## Batch File — Fields Written by `/taskflow:implement`
 
-`/taskflow:triage` creates the state file. `/taskflow:implement` fills in these fields during a run:
+`/taskflow:triage` creates the batch files. `/taskflow:implement` fills in these fields during a run:
 
-| Field                    | Written when                                         |
-| ------------------------ | ---------------------------------------------------- |
-| `batches.<batch>.branch` | Worktree created (Step 3)                            |
-| `batches.<batch>.status` | `"in-progress"` at Step 3, `"pr-created"` at Step 7  |
+| Field            | Written when                                          |
+| ---------------- | ----------------------------------------------------- |
+| `status`         | `"in-progress"` at claim, `"pr-created"` at Step 7    |
+| `branch`         | When worktree is created (Step 3)                     |
+| `pr_url`         | After PR is created (Step 7)                          |
 | `tasks.<id>.status`      | `"in-progress"` at Step 4b, `"committed"` at Step 4f |
 | `tasks.<id>.commit_shas` | After each task commit (Step 4f)                     |
-| `tasks.<id>.pr_url`      | After PR is created (Step 7)                         |
-| `tasks.<id>.branch`      | When worktree is created (Step 3)                    |
+
+The index file (`state.<developer_slug>.json`) is **never** written by `/taskflow:implement`.
 
 ---
 
 ## Output File Locations Reference
 
-| File          | Path                                                                  |
-| ------------- | --------------------------------------------------------------------- |
-| Config file   | `.claude/taskflow-config.json`                                        |
-| State file    | `<config.output_dir>/state.<developer_slug>.json`                     |
-| Per-task plan | `<config.output_dir>/tasks/<task-id>.md`                              |
-| Worktree      | `../<config.project_name>-<branch-name>/` (sibling of project root)   |
+| File           | Path                                                                  |
+| -------------- | --------------------------------------------------------------------- |
+| Config file    | `.claude/taskflow-config.json`                                        |
+| Index file     | `<config.output_dir>/state.<developer_slug>.json`                     |
+| Batch files    | `<config.output_dir>/batches/<batch-key>.json`                        |
+| Batch locks    | `<config.output_dir>/batches/<batch-key>.lock/` (directory)           |
+| Per-task plan  | `<config.output_dir>/tasks/<task-id>.md`                              |
+| Worktree       | `../<config.project_name>-<branch-name>/` (sibling of project root)   |
 
 All paths are relative to the project root unless otherwise noted.
 
