@@ -520,6 +520,8 @@ Generate a self-contained HTML triage report file. This uses the same data alrea
 
 This file is overwritten on each triage run.
 
+**Data sources:** The report is generated from the triage data already in memory. If batch files exist from previous implement runs (e.g., some batches are `"in-progress"` or `"pr-created"`), read each `<config.output_dir>/batches/<batch-key>.json` to get current batch status. Merge this with the in-memory triage data to show accurate status for all batches.
+
 **Requirements:** Build a complete self-contained HTML document with ALL CSS in a `<style>` block, ALL interaction via inline `onclick` handlers, and NO external resources (no CDN links, no `<script src>`, no external stylesheets).
 
 #### HTML Template Structure
@@ -761,43 +763,46 @@ After writing files, print the summary content directly to the terminal so the d
 Then print the file locations:
 
 ```
-State file:   <config.output_dir>/state.<developer_slug>.json
+Index file:   <config.output_dir>/state.<developer_slug>.json
+Batch files:  <config.output_dir>/batches/batch-N.json (one per batch)
 Summary file: <config.output_dir>/triage-<developer_slug>-<YYYY-MM-DD>.md
-Report file:  <config.output_dir>/triage-report.html
 Plan files:   <config.output_dir>/tasks/<task-id>.md (one per task)
+Report file:  <config.output_dir>/triage-report.html
 ```
 
 ---
 
 ## Re-triage Merge Behavior
 
-When `/taskflow:triage` is run again on an existing state file (without `--force`):
+When `/taskflow:triage` is run again on an existing index file (without `--force`):
 
 | Scenario                                                                                 | Action                                                                |
 | ---------------------------------------------------------------------------------------- | --------------------------------------------------------------------- |
-| Task is new (not in state file)                                                          | Add and triage normally                                               |
-| Task is in state file with `status: planned` and still `todo` in the provider            | Skip (already triaged)                                                |
-| Task is in state file with `status: in-progress` or `pr-created`                         | Skip — do not re-triage in-flight work                                |
-| Task is in state file but no longer `todo` in the provider (moved to another status)     | Mark `status: stale` in state file; remove from its batch's task list |
-| Batch loses all tasks due to staleness                                                   | Remove the batch from state file                                      |
+| Task is new (not in index)                                                               | Add and triage normally                                               |
+| Task is in index with a batch that is claimed (lock exists) or complete (pr-created)     | Skip — do not re-triage in-flight or completed work                   |
+| Task is in index with a pending batch (no lock, status pending)                          | Skip unless `--force`                                                 |
+| Task is in index but no longer `todo` in the provider                                    | Mark as stale in index; remove from batch file if batch is pending    |
+| Batch loses all tasks due to staleness                                                   | Remove from index; delete batch file (only if not locked)             |
 
 When `/taskflow:triage --force` is run:
 
-- Re-triage all `todo` tasks, including already-planned ones
-- Overwrite their plan files with fresh classification
-- Rebuild batches from scratch
-- Preserve `in-progress` and `pr-created` task entries — do not re-triage or re-batch tasks actively being implemented
+- Re-triage all `todo` tasks, including already-planned ones in pending batches
+- Overwrite plan files and pending batch files with fresh data
+- Rebuild batches from scratch for unclaimed work
+- Never touch claimed batches (lock exists) or completed batches (status: "pr-created") — even with `--force`
 
 ---
 
 ## Output File Locations Reference
 
-| File          | Path                                                                |
-| ------------- | ------------------------------------------------------------------- |
-| State file    | `<config.output_dir>/state.<developer_slug>.json`                   |
-| Summary file  | `<config.output_dir>/triage-<developer_slug>-<YYYY-MM-DD>.md`      |
-| HTML report   | `<config.output_dir>/triage-report.html`                            |
-| Per-task plan | `<config.output_dir>/tasks/<task-id>.md`                            |
+| File           | Path                                                                |
+| -------------- | ------------------------------------------------------------------- |
+| Index file     | `<config.output_dir>/state.<developer_slug>.json`                   |
+| Batch files    | `<config.output_dir>/batches/<batch-key>.json`                      |
+| Batch locks    | `<config.output_dir>/batches/<batch-key>.lock/` (directory)         |
+| Summary file   | `<config.output_dir>/triage-<developer_slug>-<YYYY-MM-DD>.md`      |
+| Per-task plan  | `<config.output_dir>/tasks/<task-id>.md`                            |
+| HTML report    | `<config.output_dir>/triage-report.html`                            |
 
 All paths are relative to the project root. Use absolute paths when writing files.
 
