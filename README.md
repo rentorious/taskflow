@@ -7,8 +7,11 @@ Taskflow is a Claude Code plugin that pulls tasks from your project management t
 ## Installation
 
 ```bash
-claude plugin add /path/to/taskflow
+claude plugins marketplace add github:rentorious/taskflow
+claude plugins install taskflow@taskflow
 ```
+
+After installing, restart Claude Code for the skills to become available.
 
 ## Quick Start
 
