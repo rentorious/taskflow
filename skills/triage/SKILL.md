@@ -770,6 +770,12 @@ Plan files:   <config.output_dir>/tasks/<task-id>.md (one per task)
 Report file:  <config.output_dir>/triage-report.html
 ```
 
+Then print:
+
+```
+Run /taskflow:report to view the live dashboard in your browser.
+```
+
 ---
 
 ## Re-triage Merge Behavior
