@@ -1,0 +1,18 @@
+{
+  "name": "taskflow-local",
+  "description": "Local marketplace for taskflow plugin",
+  "owner": {
+    "name": "Ognjen Popovic"
+  },
+  "plugins": [
+    {
+      "name": "taskflow",
+      "description": "Automated task triage and implementation from project management tools.",
+      "version": "1.0.0",
+      "source": "./",
+      "author": {
+        "name": "Ognjen Popovic"
+      }
+    }
+  ]
+}
