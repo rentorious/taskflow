@@ -358,19 +358,17 @@ Pick a batch name that describes what the batch accomplishes, e.g.:
 
 ---
 
-### Step 7: Write State File
+### Step 7: Write State and Batch Files
 
-Write the state file to `<config.output_dir>/state.<developer_slug>.json`.
+Write the triage output as a read-only index file plus per-batch working files.
 
-**If a state file already existed (re-triage run):** Merge the new data:
+#### 7a. Write the index file
 
-- Preserve existing task entries that were not re-triaged (kept from state file)
-- Update entries for tasks that were re-triaged
-- Update stale task statuses
-- Merge new tasks into the `tasks` map
-- Rebuild the `batches` map to reflect all current batches (new + any existing pending/in-progress batches that were not touched)
+Write to `<config.output_dir>/state.<developer_slug>.json`.
 
-**State file schema:**
+This file is the **read-only index** — it contains task classifications and batch assignments. `/taskflow:implement` reads this file but never writes to it.
+
+**Index file schema:**
 
 ```json
 {
@@ -390,30 +388,73 @@ Write the state file to `<config.output_dir>/state.<developer_slug>.json`.
         "time_estimate_human": "<e.g., '30 min', '2 hours'>",
         "time_estimate_agent": "<e.g., '10 min', '30 min'>"
       },
-      "batch": "<batch-1|batch-2|null>",
-      "status": "planned",
-      "branch": null,
-      "pr_url": null,
-      "commit_shas": []
+      "batch": "<batch-1|batch-2|null>"
     }
   },
   "batches": {
     "batch-1": {
       "name": "<human-readable batch description>",
-      "branch": null,
       "tasks": ["<task-id-1>", "<task-id-2>"],
-      "status": "pending"
+      "suggested_branch": "<branch-name>"
     }
   }
 }
 ```
 
 Field notes:
-
-- `status` for new tasks: always `"planned"`
-- `branch`, `pr_url`, `commit_shas`: always null/empty for newly triaged tasks — `/taskflow:implement` fills these in
+- Tasks have classification data only — no `status`, `branch`, `pr_url`, or `commit_shas` (those live in per-batch files)
+- Batches have `suggested_branch` (a suggestion from triage), not `branch` (which implement confirms)
 - `batch`: `null` for manual/non-implementable tasks
-- Batch `status`: always `"pending"` for new batches
+
+#### 7b. Write per-batch files
+
+Create the `<config.output_dir>/batches/` directory if it does not exist.
+
+For each batch, write an initial batch file to `<config.output_dir>/batches/<batch-key>.json`.
+
+**Per-batch file schema:**
+
+```json
+{
+  "status": "pending",
+  "branch": null,
+  "pr_url": null,
+  "tasks": {
+    "<task-id>": {
+      "status": "planned",
+      "commit_shas": []
+    }
+  }
+}
+```
+
+Field notes:
+- `status`: always `"pending"` for new batches
+- `branch`, `pr_url`: always `null` for new batches — `/taskflow:implement` fills these in
+- Per-task `status`: always `"planned"` for new tasks
+- Per-task `commit_shas`: always empty for new tasks
+
+**Important:** Only write batch files for batches that do not already have a lock directory (`<config.output_dir>/batches/<batch-key>.lock/`). If a lock exists, that batch is claimed by an in-progress implement session — do not overwrite its batch file.
+
+#### Re-triage merge behavior
+
+**If an index file already existed (re-triage run):** Merge the new data into the index:
+
+- Preserve existing task entries that were not re-triaged
+- Update entries for tasks that were re-triaged
+- Update stale task statuses
+- Merge new tasks into the `tasks` map
+- Rebuild the `batches` map to reflect all current batches
+
+**For per-batch files during re-triage:**
+
+| Batch state | Action |
+|-------------|--------|
+| Lock directory exists (`batches/<key>.lock/`) | Do not touch — batch is claimed by an active session |
+| Batch file has `status: "pr-created"` | Do not touch — batch is complete |
+| Batch file has `status: "pending"` (no lock) | Overwrite with fresh data |
+| Batch file does not exist (new batch) | Create with initial schema |
+| Batch lost all tasks due to staleness | Remove from index, delete batch file |
 
 ---
 
