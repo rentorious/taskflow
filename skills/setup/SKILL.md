@@ -216,6 +216,7 @@ For each area, show:
 > - Lint: `<detected lint command or "none detected">`
 > - Typecheck: `<detected typecheck command or "none detected">`
 > - Test: `<detected test command or "none detected">`
+> - Build: `<detected build command or "none — not a shared package">`
 >
 > Accept this area? [Y/n/edit]"
 
@@ -365,7 +366,8 @@ The setup wizard produces a config file matching this exact schema. All fields a
       "paths": ["<relative/path/to/area>"],
       "lint": "<lint command for this area, or null>",
       "typecheck": "<typecheck command for this area, or null>",
-      "test": "<test command for this area, or null>"
+      "test": "<test command for this area, or null>",
+      "build": "<build command for this area, or null>"
     }
   },
   "extra_areas": ["<non-code area name>"],
@@ -392,7 +394,7 @@ The setup wizard produces a config file matching this exact schema. All fields a
 | `provider` | The project management tool identifier (e.g., `"clickup"`) |
 | `project_name` | Derived from the git repo's root directory name |
 | `<provider>` | Provider-specific config block. Key name matches the `provider` value |
-| `areas` | Code areas detected in Stage 5. Keys are kebab-case area names |
+| `areas` | Code areas detected in Stage 5. Keys are kebab-case area names. Each area may have `lint`, `typecheck`, `test`, and `build` commands (set to `null` if not applicable) |
 | `extra_areas` | Non-code task categories from Stage 6. Empty array if none |
 | `branch_conventions` | Maps task type to branch prefix |
 | `output_dir` | Relative path where triage/implement writes state and plan files |
