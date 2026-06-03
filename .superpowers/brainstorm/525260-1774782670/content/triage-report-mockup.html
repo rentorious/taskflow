@@ -1,0 +1,431 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Triage Report — Mockup</title>
+<style>
+  :root {
+    --bg: #0d1117;
+    --surface: #161b22;
+    --surface-hover: #1c2333;
+    --border: #30363d;
+    --text: #e6edf3;
+    --text-muted: #8b949e;
+    --accent: #58a6ff;
+    --green: #3fb950;
+    --yellow: #d29922;
+    --red: #f85149;
+    --orange: #db6d28;
+    --purple: #bc8cff;
+    --radius: 8px;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif; line-height: 1.5; padding: 24px; max-width: 1100px; margin: 0 auto; }
+
+  /* Header */
+  .header { margin-bottom: 32px; }
+  .header h1 { font-size: 24px; font-weight: 600; margin-bottom: 4px; }
+  .header .meta { color: var(--text-muted); font-size: 14px; }
+
+  /* Stats bar */
+  .stats { display: flex; gap: 16px; margin-bottom: 32px; flex-wrap: wrap; }
+  .stat-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px 20px; flex: 1; min-width: 140px; }
+  .stat-card .value { font-size: 28px; font-weight: 700; }
+  .stat-card .label { font-size: 12px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px; margin-top: 2px; }
+  .stat-card.green .value { color: var(--green); }
+  .stat-card.yellow .value { color: var(--yellow); }
+  .stat-card.blue .value { color: var(--accent); }
+  .stat-card.purple .value { color: var(--purple); }
+
+  /* Area distribution bar */
+  .area-bar { display: flex; height: 8px; border-radius: 4px; overflow: hidden; margin-bottom: 32px; gap: 2px; }
+  .area-bar .segment { border-radius: 4px; }
+
+  /* Batch */
+  .batch { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); margin-bottom: 16px; overflow: hidden; }
+  .batch-header { padding: 16px 20px; cursor: pointer; display: flex; align-items: center; justify-content: space-between; user-select: none; }
+  .batch-header:hover { background: var(--surface-hover); }
+  .batch-title { font-size: 16px; font-weight: 600; display: flex; align-items: center; gap: 10px; }
+  .batch-meta { display: flex; gap: 16px; align-items: center; font-size: 13px; color: var(--text-muted); }
+  .batch-body { border-top: 1px solid var(--border); display: none; }
+  .batch.open .batch-body { display: block; }
+  .chevron { transition: transform 0.2s; font-size: 12px; color: var(--text-muted); }
+  .batch.open .chevron { transform: rotate(90deg); }
+  .batch-number { background: var(--border); color: var(--text); font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 10px; }
+
+  /* Task */
+  .task { border-bottom: 1px solid var(--border); }
+  .task:last-child { border-bottom: none; }
+  .task-header { padding: 12px 20px; cursor: pointer; display: flex; align-items: center; justify-content: space-between; }
+  .task-header:hover { background: var(--surface-hover); }
+  .task-title { font-size: 14px; font-weight: 500; display: flex; align-items: center; gap: 8px; }
+  .task-badges { display: flex; gap: 6px; align-items: center; }
+  .task-detail { display: none; padding: 0 20px 16px 20px; }
+  .task.open .task-detail { display: block; }
+
+  /* Badges */
+  .badge { font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 10px; text-transform: uppercase; letter-spacing: 0.3px; }
+  .badge-bug { background: rgba(248, 81, 73, 0.15); color: var(--red); }
+  .badge-feature { background: rgba(88, 166, 255, 0.15); color: var(--accent); }
+  .badge-investigation { background: rgba(210, 153, 34, 0.15); color: var(--yellow); }
+  .badge-small { background: rgba(63, 185, 80, 0.15); color: var(--green); }
+  .badge-medium { background: rgba(210, 153, 34, 0.15); color: var(--yellow); }
+  .badge-high { background: rgba(63, 185, 80, 0.15); color: var(--green); }
+  .badge-low { background: rgba(248, 81, 73, 0.15); color: var(--red); }
+  .badge-area { background: rgba(188, 140, 255, 0.15); color: var(--purple); }
+
+  /* Task detail content */
+  .detail-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 12px; }
+  .detail-item { font-size: 13px; }
+  .detail-item .dl { color: var(--text-muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 2px; }
+  .detail-approach { font-size: 13px; color: var(--text-muted); line-height: 1.6; margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--border); }
+  .detail-approach ol { padding-left: 20px; }
+  .detail-approach li { margin-bottom: 4px; }
+  .detail-files { font-size: 13px; margin-top: 8px; }
+  .detail-files code { background: rgba(110,118,129,0.2); padding: 1px 6px; border-radius: 4px; font-size: 12px; }
+  .task-link { color: var(--accent); text-decoration: none; font-size: 12px; }
+  .task-link:hover { text-decoration: underline; }
+
+  /* Time estimates */
+  .time-est { display: flex; gap: 16px; font-size: 13px; color: var(--text-muted); }
+  .time-est span { display: flex; align-items: center; gap: 4px; }
+
+  /* Section labels */
+  .section-label { font-size: 12px; font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 12px; }
+
+  /* Totals row */
+  .batch-totals { padding: 10px 20px; background: rgba(110,118,129,0.08); font-size: 13px; color: var(--text-muted); display: flex; gap: 24px; }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>Triage Report</h1>
+  <div class="meta">Ognjen Popovic &mdash; March 26, 2026 &mdash; 14 tasks &mdash; 6 batches</div>
+</div>
+
+<div class="stats">
+  <div class="stat-card green">
+    <div class="value">14</div>
+    <div class="label">Tasks Triaged</div>
+  </div>
+  <div class="stat-card blue">
+    <div class="value">6</div>
+    <div class="label">Batches</div>
+  </div>
+  <div class="stat-card yellow">
+    <div class="value">~3h 15m</div>
+    <div class="label">Agent Time</div>
+  </div>
+  <div class="stat-card purple">
+    <div class="value">~10-11h</div>
+    <div class="label">Human Time</div>
+  </div>
+</div>
+
+<div style="margin-bottom: 8px;">
+  <div class="section-label">Area Distribution</div>
+</div>
+<div class="area-bar">
+  <div class="segment" style="flex: 4; background: var(--red);" title="Backend: 4 tasks"></div>
+  <div class="segment" style="flex: 5; background: var(--accent);" title="Storefront: 5 tasks"></div>
+  <div class="segment" style="flex: 3; background: var(--purple);" title="Admin: 3 tasks"></div>
+  <div class="segment" style="flex: 1; background: var(--yellow);" title="SendGrid: 1 task"></div>
+  <div class="segment" style="flex: 1; background: var(--orange);" title="Investigation: 1 task"></div>
+</div>
+<div style="display: flex; gap: 16px; margin-bottom: 32px; font-size: 12px; color: var(--text-muted); flex-wrap: wrap;">
+  <span><span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:var(--red);margin-right:4px;vertical-align:middle;"></span>Backend (4)</span>
+  <span><span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:var(--accent);margin-right:4px;vertical-align:middle;"></span>Storefront (5)</span>
+  <span><span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:var(--purple);margin-right:4px;vertical-align:middle;"></span>Admin (3)</span>
+  <span><span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:var(--yellow);margin-right:4px;vertical-align:middle;"></span>SendGrid (1)</span>
+  <span><span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:var(--orange);margin-right:4px;vertical-align:middle;"></span>Investigation (1)</span>
+</div>
+
+<div class="section-label">Batches</div>
+
+<!-- Batch 1 -->
+<div class="batch open">
+  <div class="batch-header" onclick="this.parentElement.classList.toggle('open')">
+    <div class="batch-title">
+      <span class="chevron">&#9654;</span>
+      <span class="batch-number">1</span>
+      Order email fixes
+    </div>
+    <div class="batch-meta">
+      <span>4 tasks</span>
+      <span>&middot;</span>
+      <span>~50m agent</span>
+      <span>&middot;</span>
+      <span>~2h 15m human</span>
+      <span>&middot;</span>
+      <span style="font-family: monospace; font-size: 12px; color: var(--text-muted);">fix/order-email-improvements</span>
+    </div>
+  </div>
+  <div class="batch-body">
+    <!-- Task 1 -->
+    <div class="task open">
+      <div class="task-header" onclick="this.parentElement.classList.toggle('open')">
+        <div class="task-title">
+          <span class="chevron">&#9654;</span>
+          Planting location missing from customer email
+        </div>
+        <div class="task-badges">
+          <span class="badge badge-bug">bug</span>
+          <span class="badge badge-small">small</span>
+          <span class="badge badge-high">high</span>
+          <span class="badge badge-area">backend</span>
+        </div>
+      </div>
+      <div class="task-detail">
+        <div class="detail-grid">
+          <div class="detail-item">
+            <div class="dl">Time Estimate</div>
+            <div class="time-est"><span>&#9203; 30m human</span><span>&#9889; 10m agent</span></div>
+          </div>
+          <div class="detail-item">
+            <div class="dl">Task Link</div>
+            <a class="task-link" href="https://app.clickup.com/t/86c8up6h4" target="_blank">86c8up6h4 &rarr;</a>
+          </div>
+        </div>
+        <div class="detail-files">
+          <div class="dl" style="color: var(--text-muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 4px;">Files Involved</div>
+          <code>apps/backend/src/subscribers/customer-order-placed.ts</code>
+        </div>
+        <div class="detail-approach">
+          <ol>
+            <li>Fix getPlantLocationLabel() in order-formatter to correctly map location values</li>
+            <li>Ensure the planting location field is included in the email data context</li>
+            <li>Test with order #363 data shape</li>
+          </ol>
+        </div>
+      </div>
+    </div>
+
+    <!-- Task 2 -->
+    <div class="task">
+      <div class="task-header" onclick="this.parentElement.classList.toggle('open')">
+        <div class="task-title">
+          <span class="chevron">&#9654;</span>
+          Yard location formatting shows dash
+        </div>
+        <div class="task-badges">
+          <span class="badge badge-bug">bug</span>
+          <span class="badge badge-small">small</span>
+          <span class="badge badge-high">high</span>
+          <span class="badge badge-area">backend</span>
+        </div>
+      </div>
+      <div class="task-detail">
+        <div class="detail-grid">
+          <div class="detail-item">
+            <div class="dl">Time Estimate</div>
+            <div class="time-est"><span>&#9203; 45m human</span><span>&#9889; 15m agent</span></div>
+          </div>
+          <div class="detail-item">
+            <div class="dl">Task Link</div>
+            <a class="task-link" href="https://app.clickup.com/t/86c8p1qd2" target="_blank">86c8p1qd2 &rarr;</a>
+          </div>
+        </div>
+        <div class="detail-approach">
+          <ol>
+            <li>Fix label mapping for "Frontyard and Backyard" in order-formatter</li>
+            <li>Handle combined yard location values that currently render as a dash</li>
+          </ol>
+        </div>
+      </div>
+    </div>
+
+    <!-- Task 3 -->
+    <div class="task">
+      <div class="task-header" onclick="this.parentElement.classList.toggle('open')">
+        <div class="task-title">
+          <span class="chevron">&#9654;</span>
+          Yard location missing from admin email
+        </div>
+        <div class="task-badges">
+          <span class="badge badge-bug">bug</span>
+          <span class="badge badge-small">small</span>
+          <span class="badge badge-high">high</span>
+          <span class="badge badge-area">backend</span>
+        </div>
+      </div>
+      <div class="task-detail">
+        <div class="detail-grid">
+          <div class="detail-item">
+            <div class="dl">Time Estimate</div>
+            <div class="time-est"><span>&#9203; 30m human</span><span>&#9889; 10m agent</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Task 4 -->
+    <div class="task">
+      <div class="task-header" onclick="this.parentElement.classList.toggle('open')">
+        <div class="task-title">
+          <span class="chevron">&#9654;</span>
+          Billing/shipping address jumbled
+        </div>
+        <div class="task-badges">
+          <span class="badge badge-bug">bug</span>
+          <span class="badge badge-small">small</span>
+          <span class="badge badge-high">high</span>
+          <span class="badge badge-area">sendgrid</span>
+        </div>
+      </div>
+      <div class="task-detail">
+        <div class="detail-grid">
+          <div class="detail-item">
+            <div class="dl">Time Estimate</div>
+            <div class="time-est"><span>&#9203; 30m human</span><span>&#9889; 15m agent</span></div>
+          </div>
+        </div>
+        <div class="detail-approach">
+          <ol><li>Update SendGrid template layout — partial implementation (template changes needed in dashboard)</li></ol>
+        </div>
+      </div>
+    </div>
+
+    <div class="batch-totals">
+      <span>Total: ~2h 15m human &middot; ~50m agent</span>
+      <span>&middot;</span>
+      <span>Branch: <code style="background: rgba(110,118,129,0.2); padding: 1px 6px; border-radius: 4px; font-size: 12px;">fix/order-email-improvements</code></span>
+    </div>
+  </div>
+</div>
+
+<!-- Batch 2 -->
+<div class="batch">
+  <div class="batch-header" onclick="this.parentElement.classList.toggle('open')">
+    <div class="batch-title">
+      <span class="chevron">&#9654;</span>
+      <span class="batch-number">2</span>
+      Top nav search improvements
+    </div>
+    <div class="batch-meta">
+      <span>2 tasks</span>
+      <span>&middot;</span>
+      <span>~40m agent</span>
+      <span>&middot;</span>
+      <span>~2h 30m human</span>
+    </div>
+  </div>
+  <div class="batch-body">
+    <div class="task">
+      <div class="task-header" onclick="this.parentElement.classList.toggle('open')">
+        <div class="task-title"><span class="chevron">&#9654;</span> Show mature specs in search results</div>
+        <div class="task-badges"><span class="badge badge-feature">feature</span><span class="badge badge-medium">medium</span><span class="badge badge-high">high</span><span class="badge badge-area">storefront</span></div>
+      </div>
+      <div class="task-detail"><div class="detail-grid"><div class="detail-item"><div class="dl">Time Estimate</div><div class="time-est"><span>&#9203; 2h human</span><span>&#9889; 30m agent</span></div></div></div></div>
+    </div>
+    <div class="task">
+      <div class="task-header" onclick="this.parentElement.classList.toggle('open')">
+        <div class="task-title"><span class="chevron">&#9654;</span> Sort most popular items first in search</div>
+        <div class="task-badges"><span class="badge badge-feature">feature</span><span class="badge badge-small">small</span><span class="badge badge-high">high</span><span class="badge badge-area">storefront</span></div>
+      </div>
+      <div class="task-detail"><div class="detail-grid"><div class="detail-item"><div class="dl">Time Estimate</div><div class="time-est"><span>&#9203; 30m human</span><span>&#9889; 10m agent</span></div></div></div></div>
+    </div>
+    <div class="batch-totals"><span>Total: ~2h 30m human &middot; ~40m agent</span></div>
+  </div>
+</div>
+
+<!-- Batch 3 -->
+<div class="batch">
+  <div class="batch-header" onclick="this.parentElement.classList.toggle('open')">
+    <div class="batch-title">
+      <span class="chevron">&#9654;</span>
+      <span class="batch-number">3</span>
+      Admin UI fixes
+    </div>
+    <div class="batch-meta">
+      <span>2 tasks</span>
+      <span>&middot;</span>
+      <span>~15m agent</span>
+      <span>&middot;</span>
+      <span>~1h 5m human</span>
+    </div>
+  </div>
+  <div class="batch-body">
+    <div class="task">
+      <div class="task-header" onclick="this.parentElement.classList.toggle('open')">
+        <div class="task-title"><span class="chevron">&#9654;</span> Discount expiration date disappears</div>
+        <div class="task-badges"><span class="badge badge-bug">bug</span><span class="badge badge-small">small</span><span class="badge badge-high">high</span><span class="badge badge-area">admin</span></div>
+      </div>
+      <div class="task-detail"><div class="detail-grid"><div class="detail-item"><div class="dl">Time Estimate</div><div class="time-est"><span>&#9203; 20m human</span><span>&#9889; 5m agent</span></div></div></div></div>
+    </div>
+    <div class="task">
+      <div class="task-header" onclick="this.parentElement.classList.toggle('open')">
+        <div class="task-title"><span class="chevron">&#9654;</span> Swap shipping/billing addresses</div>
+        <div class="task-badges"><span class="badge badge-bug">bug</span><span class="badge badge-small">small</span><span class="badge badge-high">high</span><span class="badge badge-area">admin</span></div>
+      </div>
+      <div class="task-detail"><div class="detail-grid"><div class="detail-item"><div class="dl">Time Estimate</div><div class="time-est"><span>&#9203; 45m human</span><span>&#9889; 10m agent</span></div></div></div></div>
+    </div>
+    <div class="batch-totals"><span>Total: ~1h 5m human &middot; ~15m agent</span></div>
+  </div>
+</div>
+
+<!-- Batch 4 -->
+<div class="batch">
+  <div class="batch-header" onclick="this.parentElement.classList.toggle('open')">
+    <div class="batch-title">
+      <span class="chevron">&#9654;</span>
+      <span class="batch-number">4</span>
+      Product display bugs
+    </div>
+    <div class="batch-meta">
+      <span>3 tasks</span>
+      <span>&middot;</span>
+      <span>~25m agent</span>
+      <span>&middot;</span>
+      <span>~1h 30m human</span>
+    </div>
+  </div>
+  <div class="batch-body"></div>
+</div>
+
+<!-- Batch 5 -->
+<div class="batch">
+  <div class="batch-header" onclick="this.parentElement.classList.toggle('open')">
+    <div class="batch-title">
+      <span class="chevron">&#9654;</span>
+      <span class="batch-number">5</span>
+      Product filtering features
+    </div>
+    <div class="batch-meta">
+      <span>2 tasks</span>
+      <span>&middot;</span>
+      <span>~20m agent</span>
+      <span>&middot;</span>
+      <span>~1h 15m human</span>
+    </div>
+  </div>
+  <div class="batch-body"></div>
+</div>
+
+<!-- Batch 6 -->
+<div class="batch">
+  <div class="batch-header" onclick="this.parentElement.classList.toggle('open')">
+    <div class="batch-title">
+      <span class="chevron">&#9654;</span>
+      <span class="batch-number">6</span>
+      Structured data investigation
+    </div>
+    <div class="batch-meta">
+      <span>1 task</span>
+      <span>&middot;</span>
+      <span>~45m agent</span>
+      <span>&middot;</span>
+      <span>~2-3h human</span>
+    </div>
+  </div>
+  <div class="batch-body"></div>
+</div>
+
+<div style="margin-top: 32px; padding-top: 16px; border-top: 1px solid var(--border); font-size: 12px; color: var(--text-muted);">
+  Generated by <strong>taskflow</strong> &mdash; <code>docs/plans/taskflow/triage-report.html</code>
+</div>
+
+</body>
+</html>

@@ -1,0 +1,4 @@
+{"type":"server-started","port":63127,"host":"127.0.0.1","url_host":"localhost","url":"http://localhost:63127","screen_dir":"/home/rentorious/dev/taskflow/.superpowers/brainstorm/525260-1774782670/content","state_dir":"/home/rentorious/dev/taskflow/.superpowers/brainstorm/525260-1774782670/state"}
+{"type":"screen-added","file":"/home/rentorious/dev/taskflow/.superpowers/brainstorm/525260-1774782670/content/triage-report-mockup.html"}
+{"type":"screen-added","file":"/home/rentorious/dev/taskflow/.superpowers/brainstorm/525260-1774782670/content/waiting.html"}
+{"type":"server-stopped","reason":"idle timeout"}
