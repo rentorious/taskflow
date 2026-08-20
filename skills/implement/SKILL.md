@@ -68,6 +68,7 @@ Follow these steps in order. Do not skip or reorder steps.
 
    **If a batch name was passed** (e.g., `/taskflow:implement batch-2`):
    - If that batch does not exist in the index, stop and list available batches.
+   - **Dependency check:** if the batch has a non-empty `depends_on` in the index, read each dependency's batch file. If any dependency's `status` is not `"pr-created"` or `"done"`, warn: "Batch 2 depends on <batch-key> which is not complete." Ask whether to stop or proceed by stacking on the dependency's branch (see Step 3).
    - Read `<config.output_dir>/batches/batch-2.json` — if `status` is `"pr-created"` or `"done"`, stop: "Batch 2 is already complete."
    - Check if `<config.output_dir>/batches/batch-2.lock/` exists:
      - If yes — this is a **resume scenario**. Read `batch-2.json`:
@@ -84,6 +85,7 @@ Follow these steps in order. Do not skip or reorder steps.
    - Iterate through batches in key order (batch-1, batch-2, ...):
      - If `<config.output_dir>/batches/<batch-key>.lock/` exists → skip (claimed)
      - Read `<config.output_dir>/batches/<batch-key>.json` — if `status` is `"pr-created"` or `"done"` → skip (complete)
+     - If the batch has a non-empty `depends_on` in the index and any dependency's batch file has `status` other than `"pr-created"` or `"done"` → skip (blocked). Note it in the final report as "blocked by <batch-key>".
      - Try: `mkdir <config.output_dir>/batches/<batch-key>.lock/`
      - If mkdir succeeds → claimed. Read the batch file and proceed.
      - If mkdir fails (race condition) → skip, try next batch.
@@ -166,6 +168,8 @@ For each task where `classification.confidence` is `"low"`:
    ```bash
    git worktree add -b <branch-name> ../<config.project_name>-<branch-name> origin/<config.base_branch>
    ```
+
+   **Stacked batches:** if the claimed batch has `depends_on` and a dependency's PR exists but is not merged yet (`gh pr view <dep-branch> --json state,mergedAt`), the dependency's commits are not in `origin/<config.base_branch>`. Create the branch from the dependency's branch instead (`origin/<dep-branch>`), and remember to use `<dep-branch>` as the PR base in Step 7. This produces a stacked PR that retargets cleanly once the dependency merges.
 
    - If the branch already exists locally (e.g., a previous aborted run), use:
      ```bash
@@ -352,7 +356,7 @@ For each task in the batch (including any that were already committed from a pre
 2. Create the PR using `gh`:
 
    ```bash
-   gh pr create --title "<title>" --body "$(cat <<'EOF'
+   gh pr create --base <config.base_branch> --title "<title>" --body "$(cat <<'EOF'
    ## Summary
    <1–3 bullet points describing what this PR changes>
 
@@ -367,6 +371,8 @@ For each task in the batch (including any that were already committed from a pre
    EOF
    )"
    ```
+
+   If this batch was stacked on an unmerged dependency branch (Step 3), pass that branch to `--base` instead of `<config.base_branch>`, and note the stacking in the PR body ("Stacked on #<dep-pr-number> — merge that first").
 
    PR title rules:
    - Descriptive, under 70 characters
@@ -506,7 +512,7 @@ Use this section when `config.provider` is `"clickup"`.
 |---------------------|-------------------|-------|
 | `get_task(id)` | `clickup_get_task` | Pass `task_id: id` |
 | `update_task(id, fields)` | `clickup_update_task` | Pass `task_id: id` + fields. Map status values per table below. |
-| `add_comment(id, text)` | `clickup_create_task_comment` | Pass `task_id: id`, `comment_text: text` |
+| `add_comment(id, text)` | `clickup_create_comment` | Pass `task_id: id`, `comment_text: text` |
 
 ### Status Mapping
 

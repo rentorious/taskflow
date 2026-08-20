@@ -84,9 +84,18 @@ Follow these steps in order. Do not skip or reorder steps.
    - Description — may be empty
    - Task URL
    - Status, assignees, tags
-   - Attachments — note whether attachments are present (you cannot view image content, only their existence)
+   - Priority and due date (if set) — used for batch ordering in Step 6
+   - Attachments — list them (id, filename, type). Image and PDF attachments CAN be viewed — see "Viewing attachments" below.
 
 4. For each task, call `get_comments(id)` to retrieve comment content — may reveal additional context.
+
+   **Viewing attachments (images, PDFs):** for any task whose description alone is insufficient, pull its viewable attachments before classification:
+
+   1. Call `download_attachment(task_id, attachment_id)` to get a download URL. The URL is short-lived (~5 min) and may be single-use — use it immediately, exactly once; never preview, HEAD-request, retry, or store it.
+   2. Download right away: `curl -sL -o <config.output_dir>/attachments/<task-id>/<filename> "<url>"` (create the directory first).
+   3. Read the downloaded file with the Read tool — images render visually; PDFs are readable page by page.
+
+   If a download fails or the URL expired, call `download_attachment` again for a fresh URL. Non-viewable formats (`.docx`, `.zip`, video) can still be downloaded but not Read — note their existence and filename instead.
 
 5. **Filter already-triaged tasks** (when not using `--force`):
    - Cross-reference each returned task ID against the already-triaged set from the state file
@@ -116,7 +125,7 @@ For each task that needs triage, dispatch one classification agent using the Age
 - Task title
 - Task description (may be empty)
 - Comment content (if any)
-- Whether attachments are present (and count)
+- Local file paths of any downloaded attachments (from Step 2) — the agent must Read image/PDF attachments before classifying, plus a note of any attachments that could not be downloaded or viewed
 - The classification schema and rules below
 - The `config.areas` and `config.extra_areas` from the config file
 
@@ -188,7 +197,7 @@ Rules:
 
 - `high`: Task description is clear, the affected code is findable in the codebase, the approach is obvious.
 - `medium`: General intent is clear but some ambiguity — e.g., which specific component, exact behavior expected, edge cases.
-- `low`: Insufficient information. No description + only a screenshot attachment, vague title, task requires visual context you cannot access, or deeply ambiguous requirements.
+- `low`: Insufficient information. Vague title with no description and no viewable attachment, task requires context you cannot access (e.g. a video walkthrough or an external dashboard), or deeply ambiguous requirements. A clear screenshot counts as information — a screenshot-only task can be `high` confidence if the image makes the problem obvious.
 
 **`implementable`**:
 
@@ -209,12 +218,32 @@ When searching, use keyword matching on component names, route paths, UI labels,
 
 #### Special Case: Screenshot-only Tasks
 
-If a task has:
+If a task has an empty or near-empty description (title only) but has image attachments:
 
-- An empty or near-empty description (title only), AND
-- One or more attachments (likely a screenshot)
+1. Download and Read the image(s) first (see "Viewing attachments" in Step 2). Do not classify until you have looked at them.
+2. Classify based on what the screenshot actually shows, combined with the title. Identify the page or component by matching visible UI text from the screenshot against the codebase.
+3. Assign `confidence: low` only if the task is still ambiguous after viewing — e.g. it's unclear what in the image is wrong, or the expected behavior is unknowable from the image.
 
-Assign `confidence: low` regardless of other signals. You cannot view image attachments through the MCP. Make a best-effort guess at what the screenshot might show based on the task title, but do not fabricate specifics.
+Never fabricate specifics about an image that failed to download. If the download fails even with a fresh URL, fall back to `confidence: low` and say so in the `unclear` field.
+
+---
+
+### Step 3.5: Cross-Task Relatedness Pass
+
+Classification agents run in isolation and cannot see each other's results. This step runs in the orchestrator, comparing ALL classification objects before enrichment and batching. Build a relatedness map with three relationship types:
+
+**1. Duplicates** — two tasks describing the same defect or request. Compare titles, summaries, and any attachments viewed in Step 2 (two screenshots of the same broken page = strong duplicate signal).
+
+- Pick the canonical task: the one with more context, or the older one if equal.
+- For the duplicate: call `link_tasks(duplicate_id, canonical_id)` to link them in the provider, and `add_comment` on the duplicate in the developer's voice, e.g. "This looks like the same issue as <canonical task title> — tracking it there."
+- The duplicate gets `batch: null` and `duplicate_of: "<canonical-task-id>"` in the index. Do not write a plan file for it.
+- Never change the duplicate's status or close it — leave that to the developer.
+
+**2. File overlap** — tasks whose `files` lists intersect. These MUST land in the same batch in Step 6 (see Rule 2 there). Two batches editing the same file means two parallel worktrees producing guaranteed merge conflicts.
+
+**3. Connected features** — tasks that are part of the same feature or user-facing concern but touch different files. Prefer the same batch when complexity limits allow; otherwise split into separate batches with a `depends_on` relationship if one builds on the other (see Step 6, Rule 6).
+
+For every related group, add a "## Related Tasks" section to each member's plan file in Step 5, listing the other task IDs and the relationship (`duplicate-of`, `same-files`, `same-feature`). An implement session working one batch must be able to see the full picture.
 
 ---
 
@@ -255,7 +284,7 @@ Example:
 
 Example clarification comment:
 
-> "Hey Derek, the description didn't come through on this one — just a screenshot and I can't pull up images through my tooling. Can you describe what you're seeing? Which page is this on and what's the expected behavior?"
+> "Hey Derek, I looked at the screenshot but I'm not 100% sure what the ask is. Is it the totals row that's wrong or the line items? And what should it show instead?"
 
 Adjust the comment tone to match what the developer would actually write. If the task creator's name is known, use it in the greeting.
 
@@ -304,6 +333,10 @@ Create the `<config.output_dir>/tasks/` directory if it does not exist.
 ## Dependencies
 
 <Other task IDs that should be implemented first, with a brief reason. Write "None." if independent.>
+
+## Related Tasks
+
+<Other task IDs from the Step 3.5 relatedness map, with the relationship (duplicate-of, same-files, same-feature) and a brief note. Write "None." if independent.>
 ```
 
 **For `implementable: no` tasks**, use this condensed format:
@@ -336,7 +369,9 @@ Create batch groupings from the classified tasks. Apply these rules in order:
 Tasks with `implementable: no` go into a separate "manual" group. They are listed in the summary but assigned `batch: null` in the state file.
 
 **Rule 2 — Group by relatedness first:**
-Tasks that touch the same feature area, the same files, or are clearly part of the same user-facing concern belong in the same batch. For example: multiple email template issues -> one batch; multiple storefront product page issues -> one batch.
+Use the relatedness map from Step 3.5. Tasks that touch the same feature area, the same files, or are clearly part of the same user-facing concern belong in the same batch. For example: multiple email template issues -> one batch; multiple storefront product page issues -> one batch.
+
+File-overlap groups are mandatory: tasks whose `files` lists intersect must share a batch even if that exceeds the Rule 3 caps — raise the cap for that batch rather than split the group across two worktrees.
 
 **Rule 3 — Then apply complexity limits per batch:**
 
@@ -355,6 +390,16 @@ Pick a batch name that describes what the batch accomplishes, e.g.:
 - "Product page UI bugs"
 - "Inventory search improvements"
 - "Admin order management features"
+
+**Rule 6 — Record batch dependencies:**
+If a batch builds on another batch's changes — the same feature split across batches by the Rule 3 caps, or a plan file's "Dependencies" section pointing at a task in another batch — record `depends_on: ["<batch-key>"]` on the dependent batch in the index. `/taskflow:implement` will not claim a batch before its dependencies have PRs.
+
+**Rule 7 — Number batches in claim order:**
+`/taskflow:implement` claims batches in key order (batch-1 first), so numbering IS prioritization. Assign numbers by:
+
+1. Provider priority (urgent/high first), then nearest due date
+2. Quick wins next — small-complexity, high-confidence batches before large or risky ones
+3. A batch that others depend on always gets a lower number than its dependents
 
 ---
 
@@ -395,7 +440,8 @@ This file is the **read-only index** — it contains task classifications and ba
     "batch-1": {
       "name": "<human-readable batch description>",
       "tasks": ["<task-id-1>", "<task-id-2>"],
-      "suggested_branch": "<branch-name>"
+      "suggested_branch": "<branch-name>",
+      "depends_on": []
     }
   }
 }
@@ -405,6 +451,8 @@ Field notes:
 - Tasks have classification data only — no `status`, `branch`, `pr_url`, or `commit_shas` (those live in per-batch files)
 - Batches have `suggested_branch` (a suggestion from triage), not `branch` (which implement confirms)
 - `batch`: `null` for manual/non-implementable tasks
+- `depends_on`: batch keys that must reach `pr-created` before this batch is claimable; empty array if independent
+- Duplicate tasks (Step 3.5) get `batch: null` plus `duplicate_of: "<canonical-task-id>"` in their task entry
 
 #### 7b. Write per-batch files
 
@@ -475,7 +523,7 @@ Write a human-readable summary to:
 
 ### Batch 1: <Batch Name>
 
-- **Tasks:** <count> | **Overall Complexity:** <small|medium|large> | **Suggested Branch:** `<branch-name>`
+- **Tasks:** <count> | **Overall Complexity:** <small|medium|large> | **Suggested Branch:** `<branch-name>` | **Depends on:** <batch keys, or "—">
 - [ ] <Task Title> (`<task-id>`) — <one-line summary of what needs to change>
 - [ ] <Task Title> (`<task-id>`) — <one-line summary>
 
@@ -486,6 +534,10 @@ Write a human-readable summary to:
 ## Manual Tasks (not batched)
 
 - <Task Title> (`<task-id>`) — <why it's manual / what needs to be done manually>
+
+## Duplicates (not batched)
+
+- <Task Title> (`<task-id>`) — duplicate of <canonical task title> (`<task-id>`); linked and commented in the provider
 
 ## Low Confidence Tasks (need clarification before implementing)
 
@@ -822,6 +874,7 @@ All paths are relative to the project root. Use absolute paths when writing file
 - If `get_task` fails for an individual task: note the failure, skip that task, and continue with others. List skipped tasks in the terminal summary.
 - If `update_task` fails for a task: note the failure and continue. The plan file still gets written.
 - If `add_comment` fails: note the failure and continue. Comments are not blocking.
+- If `download_attachment` fails or the URL expired: call it once more for a fresh URL. If it still fails, proceed without the attachment, classify with what remains, and record the failure in the `unclear` field.
 
 **Missing memory:**
 
@@ -846,8 +899,10 @@ Use this section when `config.provider` is `"clickup"`.
 | `get_task(id)` | `clickup_get_task` | Pass `task_id: id` |
 | `get_comments(id)` | `clickup_get_task_comments` | Pass `task_id: id` |
 | `update_task(id, fields)` | `clickup_update_task` | Pass `task_id: id` + field overrides |
-| `add_comment(id, text)` | `clickup_create_task_comment` | Pass `task_id: id`, `comment_text: text` |
+| `add_comment(id, text)` | `clickup_create_comment` | Pass `task_id: id`, `comment_text: text` |
 | `find_member(name)` | `clickup_find_member_by_name` | Pass `name: name` |
+| `download_attachment(task_id, attachment_id)` | `clickup_download_task_attachment` | Get attachment IDs from `clickup_get_task` with `include: ["attachments"]`. Returns a short-lived (~5 min), possibly single-use download URL — curl it immediately, exactly once |
+| `link_tasks(id, other_id)` | `clickup_add_task_link` | Pass `task_id: id`, `links_to: other_id`. Bidirectional link, no blocking semantics |
 
 ### Status Mapping
 
@@ -862,6 +917,7 @@ Use this section when `config.provider` is `"clickup"`.
 ### ClickUp-Specific Notes
 
 - Task URLs follow the pattern: `https://app.clickup.com/t/<task_id>`
+- `priority` and `due_date` come back on `clickup_get_task` — use them for Step 6 batch ordering
 - `clickup_filter_tasks` returns tasks with `name`, `id`, `status.status`, `url`, and `assignees` array
 - Comments are retrieved separately via `clickup_get_task_comments`
-- Attachments are noted on the task object but image content cannot be viewed through MCP
+- Attachment IDs come from `clickup_get_task` with `include: ["attachments"]`; content is downloaded via `clickup_download_task_attachment`. The returned URL expires within ~5 minutes and may be single-use — fetch it immediately and exactly once, then Read the local file (images render visually, PDFs page by page)
