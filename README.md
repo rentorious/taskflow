@@ -21,6 +21,8 @@ After installing, restart Claude Code for the skills to become available.
 
 3. **Implement** — Run `/taskflow:implement` to execute the next batch: creates a worktree, implements changes, runs checks, updates task statuses, and opens a PR.
 
+4. **Clean** — Run `/taskflow:clean` when a cycle is done. It stops the report server and archives the index, batches, plans and attachments to `<output_dir>/archive/<cycle-date>/`, so the next triage starts from a blank slate. `--purge` deletes everything instead.
+
 ## Skills
 
 | Skill | Command | Purpose |
@@ -28,6 +30,8 @@ After installing, restart Claude Code for the skills to become available.
 | Setup | `/taskflow:setup` | Interactive wizard to generate project config |
 | Triage | `/taskflow:triage` | Fetch, classify, plan, and batch tasks |
 | Implement | `/taskflow:implement` | Execute a batch: implement, verify, PR |
+| Report | `/taskflow:report` | Live browser dashboard of triage / implementation progress |
+| Clean | `/taskflow:clean` | Archive (or `--purge`) the local state to start a fresh cycle |
 
 ## Supported Providers
 
@@ -53,6 +57,24 @@ The config file lives at `.claude/taskflow-config.json` in your project. It's ge
 | `install_command` | Dependency installation command |
 | `full_lint` | Full-repo lint command |
 | `full_typecheck` | Full-repo typecheck command |
+| `provider_comments` | **Default `false`.** Post developer-voice comments back to the provider. See below |
+
+### Provider comments (off by default)
+
+Taskflow used to write a developer-voice comment on every task — a clarification question during triage, a "here's what I changed + PR link" note during implement. That is now **disabled by default**, because comment volume is permanent provider-side storage and counts against free-plan quotas.
+
+With `provider_comments` absent or `false`:
+
+- No comments are posted, ever.
+- Clarification questions for low-confidence tasks are still drafted — they land in the task's plan file under `## Open Question` and in the triage summary under **Low Confidence Tasks**, ready to paste manually.
+- PR URLs still land in the batch file and the implement terminal summary; the PR body links every task.
+- Status transitions (`to do` → `in progress` → `code review`), description enrichment, and duplicate task links are unaffected — those overwrite rather than accumulate.
+
+To opt back in, set it in `.claude/taskflow-config.json`:
+
+```json
+"provider_comments": true
+```
 
 ## License
 

@@ -38,6 +38,22 @@ Before starting, verify:
 
 ---
 
+## Provider Comments — DISABLED by default
+
+Posting developer-voice comments back to the provider is **off** unless `config.provider_comments` is exactly `true`. A missing key, `null`, or `false` all mean off. Reason: every comment is permanent provider-side storage, and comment volume counts against free-plan storage/usage quotas.
+
+**When the flag is off (the default):**
+
+- Never call `add_comment`, for any reason, anywhere in this workflow.
+- The PR URL still reaches the developer — it is written to the batch file and printed in the Step 8 terminal summary, and the PR body links every task.
+- Do not print "commented in the provider" or similar in terminal output.
+
+**When `config.provider_comments` is `true`:** run the gated blocks exactly as written.
+
+**Not gated:** `update_task` status transitions (`in_progress`, `in_review`). Status is a field overwrite, not accumulated storage, and it is the mechanism the board depends on.
+
+---
+
 ## Step-by-Step Process
 
 Follow these steps in order. Do not skip or reorder steps.
@@ -313,7 +329,11 @@ For each task in the batch (including any that were already committed from a pre
    update_task(id, {status: "in_review"})
    ```
 
-2. **Add a comment in the developer's voice:**
+2. **Add a comment in the developer's voice — GATED, off by default.**
+
+   Skip this entire sub-step unless `config.provider_comments` is exactly `true`. When the flag is off, the status move in sub-step 1 is the only provider write; go straight to Step 7. Do not draft the comment, do not print it, do not offer to post it.
+
+   When the flag is `true`:
 
    ```
    add_comment(id, "<comment>")
@@ -336,7 +356,7 @@ For each task in the batch (including any that were already committed from a pre
 
    > "Updated the copy on the cart empty state — 'Your cart is empty' to 'Nothing here yet'. PR: <url>"
 
-   **Note on PR URL:** If the provider is being updated before the PR is created (e.g., in a partial run), omit the PR URL from the comment initially. After Step 7 creates the PR, go back and add a follow-up comment with the PR URL only if the initial comment did not include it.
+   **Note on PR URL (applies only when the gate above is open):** If the provider is being updated before the PR is created (e.g., in a partial run), omit the PR URL from the comment initially. After Step 7 creates the PR, go back and add a follow-up comment with the PR URL only if the initial comment did not include it.
 
 **If provider API is unavailable:**
 
@@ -390,10 +410,15 @@ For each task in the batch (including any that were already committed from a pre
    - Set `pr_url` on each task in the batch to the PR URL
    - Set the batch's `status` to `"pr-created"`
 
-5. If provider comments from Step 6 did not include the PR URL, add a follow-up comment to each task now:
+5. **Follow-up PR URL comment — GATED, off by default.**
+
+   Only when `config.provider_comments` is `true` AND the Step 6 comment did not already carry the PR URL, add a follow-up comment to each task:
+
    ```
    add_comment(id, "PR: <url>")
    ```
+
+   When the flag is off, skip this — the PR URL lives in the batch file (sub-step 4) and the Step 8 terminal summary.
 
 ---
 
@@ -444,7 +469,7 @@ If Step 5 (full verification) fails:
 ### Provider API unavailable
 
 - Proceed with all code changes and the PR
-- Print: "Provider unavailable — skipped status updates. Move tasks to 'in review' manually and add the PR URL as a comment."
+- Print: "Provider unavailable — skipped status updates. Move tasks to 'in review' manually." Append " and add the PR URL as a comment" only when `config.provider_comments` is `true`.
 - Record the PR URL in the batch file as normal
 
 ### Worktree already exists (from previous aborted run)
@@ -512,7 +537,7 @@ Use this section when `config.provider` is `"clickup"`.
 |---------------------|-------------------|-------|
 | `get_task(id)` | `clickup_get_task` | Pass `task_id: id` |
 | `update_task(id, fields)` | `clickup_update_task` | Pass `task_id: id` + fields. Map status values per table below. |
-| `add_comment(id, text)` | `clickup_create_comment` | Pass `task_id: id`, `comment_text: text` |
+| `add_comment(id, text)` | `clickup_create_comment` | Pass `task_id: id`, `comment_text: text`. **Gated — only callable when `config.provider_comments` is `true`. Off by default; see "Provider Comments" above** |
 
 ### Status Mapping
 

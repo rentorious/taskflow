@@ -337,6 +337,8 @@ Print the full config JSON to the terminal so the user can review it.
 Print:
 > "Config written to `.claude/taskflow-config.json`. Review it and adjust any values if needed.
 >
+> Note: `provider_comments` is `false` — taskflow will not post comments back to <provider>. Clarification questions and PR links land in the local summary instead. Flip it to `true` in the config if you want comments posted.
+>
 > Next steps:
 > - Run `/taskflow:triage` to pull and classify your tasks
 > - Run `/taskflow:implement` to execute a batch"
@@ -382,7 +384,8 @@ The setup wizard produces a config file matching this exact schema. All fields a
   "build_before_implement": ["<build command for shared packages>"],
   "install_command": "<package install command>",
   "full_lint": "<full repo lint command or null>",
-  "full_typecheck": "<full repo typecheck command or null>"
+  "full_typecheck": "<full repo typecheck command or null>",
+  "provider_comments": false
 }
 ```
 
@@ -403,6 +406,9 @@ The setup wizard produces a config file matching this exact schema. All fields a
 | `install_command` | Command to install dependencies (e.g., `"pnpm install"`) |
 | `full_lint` | Command to lint the entire repo. `null` if not available |
 | `full_typecheck` | Command to typecheck the entire repo. `null` if not available |
+| `provider_comments` | **Default `false`.** When `false` (or absent), triage and implement never post developer-voice comments back to the provider — the content is written to local plan/summary files instead. Set to `true` only to opt back in. Comment volume counts against provider storage/usage quotas (ClickUp free plan), which is why this ships off |
+
+**Always write `provider_comments: false` in a newly generated config.** Do not ask the user about it during the wizard — it is an opt-in knob, not a setup decision.
 
 ---
 

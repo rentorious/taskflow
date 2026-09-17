@@ -39,6 +39,22 @@ Before starting, verify:
 
 ---
 
+## Provider Comments — DISABLED by default
+
+Posting developer-voice comments back to the provider is **off** unless `config.provider_comments` is exactly `true`. A missing key, `null`, or `false` all mean off. Reason: every comment is permanent provider-side storage, and comment volume counts against free-plan storage/usage quotas.
+
+**When the flag is off (the default):**
+
+- Never call `add_comment`, for any reason, anywhere in this workflow.
+- Every gated block below has a **local fallback** — write the content that would have been commented into the plan file and/or the summary file instead. Nothing is lost; it just lands locally.
+- Do not print "commented in the provider" or similar in terminal output or the summary file.
+
+**When `config.provider_comments` is `true`:** run the gated blocks exactly as written.
+
+**Not gated** (these overwrite rather than accumulate, so they do not grow storage): `update_task` status changes, `update_task` description enrichment, and `link_tasks`.
+
+---
+
 ## Step-by-Step Process
 
 Follow these steps in order. Do not skip or reorder steps.
@@ -235,7 +251,8 @@ Classification agents run in isolation and cannot see each other's results. This
 **1. Duplicates** — two tasks describing the same defect or request. Compare titles, summaries, and any attachments viewed in Step 2 (two screenshots of the same broken page = strong duplicate signal).
 
 - Pick the canonical task: the one with more context, or the older one if equal.
-- For the duplicate: call `link_tasks(duplicate_id, canonical_id)` to link them in the provider, and `add_comment` on the duplicate in the developer's voice, e.g. "This looks like the same issue as <canonical task title> — tracking it there."
+- For the duplicate: call `link_tasks(duplicate_id, canonical_id)` to link them in the provider. The link is not gated — post it always.
+- **Comment (gated — see "Provider Comments" above).** If `config.provider_comments` is `true`, also `add_comment` on the duplicate in the developer's voice, e.g. "This looks like the same issue as <canonical task title> — tracking it there." If the flag is off, skip the comment — the provider link plus the `duplicate_of` entry in the index and the Duplicates section of the summary already record it.
 - The duplicate gets `batch: null` and `duplicate_of: "<canonical-task-id>"` in the index. Do not write a plan file for it.
 - Never change the duplicate's status or close it — leave that to the developer.
 
@@ -280,13 +297,22 @@ Example:
 **For `confidence: low` tasks:**
 
 1. Call `update_task(id, {description: ...})` with whatever context CAN be determined from the title alone
-2. Call `add_comment(id, ...)` to ask for clarification in the developer's voice
+2. Draft the clarification question you would ask the task creator, in the developer's voice.
 
-Example clarification comment:
+Example clarification question:
 
 > "Hey Derek, I looked at the screenshot but I'm not 100% sure what the ask is. Is it the totals row that's wrong or the line items? And what should it show instead?"
 
-Adjust the comment tone to match what the developer would actually write. If the task creator's name is known, use it in the greeting.
+Adjust the tone to match what the developer would actually write. If the task creator's name is known, use it in the greeting.
+
+**Where the question goes (gated — see "Provider Comments" above):**
+
+- `config.provider_comments === true`: call `add_comment(id, ...)` to post it, AND record it locally as below.
+- Flag off (default): do **not** call `add_comment`. Record the question locally only:
+  - Write it under a `## Open Question` heading in the task's plan file (Step 5).
+  - Repeat it verbatim in the "Low Confidence Tasks" section of the summary file (Step 8), so the developer can paste it to the task creator themselves.
+
+The question must always be drafted and written locally, flag or no flag — disabling comments suppresses the posting, never the thinking.
 
 ---
 
@@ -337,6 +363,10 @@ Create the `<config.output_dir>/tasks/` directory if it does not exist.
 ## Related Tasks
 
 <Other task IDs from the Step 3.5 relatedness map, with the relationship (duplicate-of, same-files, same-feature) and a brief note. Write "None." if independent.>
+
+## Open Question
+
+<For `confidence: low` tasks only: the clarification question drafted in Step 4, verbatim, in the developer's voice. Omit this section entirely for medium/high confidence tasks. If `config.provider_comments` is `true` the same text was also posted as a comment — note "(posted as a comment)" after it.>
 ```
 
 **For `implementable: no` tasks**, use this condensed format:
@@ -537,11 +567,12 @@ Write a human-readable summary to:
 
 ## Duplicates (not batched)
 
-- <Task Title> (`<task-id>`) — duplicate of <canonical task title> (`<task-id>`); linked and commented in the provider
+- <Task Title> (`<task-id>`) — duplicate of <canonical task title> (`<task-id>`); linked in the provider
 
 ## Low Confidence Tasks (need clarification before implementing)
 
-- <Task Title> (`<task-id>`) — <what's unclear, what clarification was requested>
+- <Task Title> (`<task-id>`) — <what's unclear>
+  - **Ask:** <the clarification question from Step 4, verbatim, ready to paste to the task creator>
 
 ## Stats
 
@@ -553,6 +584,11 @@ Write a human-readable summary to:
 - **Batches created:** <n>
 - **Low confidence tasks:** <n>
 ```
+
+Summary notes:
+
+- The **Ask** line under each low-confidence task is mandatory when `config.provider_comments` is off — it is the only place the clarification question surfaces. When the flag is on, keep the line and append "(posted as a comment)".
+- In the Duplicates section, write "linked and commented in the provider" only when `config.provider_comments` is `true`; otherwise "linked in the provider".
 
 For the suggested branch name in each batch, use `config.branch_conventions` to determine the prefix:
 
@@ -873,7 +909,7 @@ All paths are relative to the project root. Use absolute paths when writing file
 - If `fetch_tasks` fails: stop and report the error. Do not proceed with stale cached data.
 - If `get_task` fails for an individual task: note the failure, skip that task, and continue with others. List skipped tasks in the terminal summary.
 - If `update_task` fails for a task: note the failure and continue. The plan file still gets written.
-- If `add_comment` fails: note the failure and continue. Comments are not blocking.
+- If `add_comment` fails (only reachable when `config.provider_comments` is `true`): note the failure and continue. Comments are not blocking.
 - If `download_attachment` fails or the URL expired: call it once more for a fresh URL. If it still fails, proceed without the attachment, classify with what remains, and record the failure in the `unclear` field.
 
 **Missing memory:**
@@ -899,7 +935,7 @@ Use this section when `config.provider` is `"clickup"`.
 | `get_task(id)` | `clickup_get_task` | Pass `task_id: id` |
 | `get_comments(id)` | `clickup_get_task_comments` | Pass `task_id: id` |
 | `update_task(id, fields)` | `clickup_update_task` | Pass `task_id: id` + field overrides |
-| `add_comment(id, text)` | `clickup_create_comment` | Pass `task_id: id`, `comment_text: text` |
+| `add_comment(id, text)` | `clickup_create_comment` | Pass `task_id: id`, `comment_text: text`. **Gated — only callable when `config.provider_comments` is `true`. Off by default; see "Provider Comments" above** |
 | `find_member(name)` | `clickup_find_member_by_name` | Pass `name: name` |
 | `download_attachment(task_id, attachment_id)` | `clickup_download_task_attachment` | Get attachment IDs from `clickup_get_task` with `include: ["attachments"]`. Returns a short-lived (~5 min), possibly single-use download URL — curl it immediately, exactly once |
 | `link_tasks(id, other_id)` | `clickup_add_task_link` | Pass `task_id: id`, `links_to: other_id`. Bidirectional link, no blocking semantics |
