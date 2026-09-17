@@ -3,9 +3,74 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
 <title>Taskflow</title>
+<script src="theme.js"></script>
+<link rel="stylesheet" href="styles.css">
 </head>
 <body>
-<p>Taskflow report.</p>
+<a class="skip" href="#queue">Skip to the queue</a>
+
+<header class="topbar">
+  <h1 class="wordmark">Taskflow</h1>
+  <p class="cycle-line" id="cycle-line"></p>
+  <div class="topbar-tools">
+    <span class="live" id="live" role="status"></span>
+    <label class="field-inline">
+      <span>Cycle</span>
+      <select id="cycle-select"></select>
+    </label>
+    <button type="button" class="btn" id="notes-button">Cycle notes</button>
+    <button type="button" class="btn" id="theme-button" aria-label="Change colour theme"></button>
+    <button type="button" class="btn" id="help-button" aria-label="Keyboard shortcuts">?</button>
+  </div>
+</header>
+
+<div class="banner" id="banner" hidden></div>
+
+<nav class="lanes" id="lane-nav" aria-label="Lanes"></nav>
+
+<main class="board">
+  <section class="queue" id="queue" aria-label="Work queue" tabindex="-1">
+    <div class="queue-tools">
+      <label class="search">
+        <span class="visually-hidden">Search tasks, batches and branches</span>
+        <input type="search" id="search" placeholder="Search tasks, batches, branches" autocomplete="off" spellcheck="false">
+      </label>
+      <button type="button" class="btn" id="filter-button" aria-expanded="false" aria-controls="filter-panel">Filter</button>
+      <div class="active-filters" id="active-filters"></div>
+    </div>
+    <div class="filter-panel" id="filter-panel" hidden></div>
+    <div class="queue-body" id="queue-body"></div>
+  </section>
+
+  <section class="detail" id="detail" aria-label="Details" tabindex="-1"></section>
+</main>
+
+<dialog class="lightbox" id="lightbox" aria-label="Screenshot">
+  <form method="dialog"><button class="btn" type="submit">Close</button></form>
+  <img id="lightbox-image" alt="">
+</dialog>
+
+<dialog class="sheet" id="notes-dialog" aria-labelledby="notes-title">
+  <header><h2 id="notes-title">Cycle notes</h2><form method="dialog"><button class="btn" type="submit">Close</button></form></header>
+  <div class="prose" id="notes-body"></div>
+</dialog>
+
+<dialog class="sheet" id="help-dialog" aria-labelledby="help-title">
+  <header><h2 id="help-title">Keyboard shortcuts</h2><form method="dialog"><button class="btn" type="submit">Close</button></form></header>
+  <dl class="keys">
+    <dt><kbd>j</kbd> <kbd>k</kbd></dt><dd>Move down and up the queue</dd>
+    <dt><kbd>Enter</kbd></dt><dd>Jump into the details</dd>
+    <dt><kbd>c</kbd></dt><dd>Copy the command for the selected row</dd>
+    <dt><kbd>x</kbd></dt><dd>Take the next step on the selected inbox item</dd>
+    <dt><kbd>/</kbd></dt><dd>Search</dd>
+    <dt><kbd>f</kbd></dt><dd>Open or close the filters</dd>
+    <dt><kbd>Esc</kbd></dt><dd>Clear the search, or go back to the queue</dd>
+  </dl>
+</dialog>
+
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+<script type="module" src="app.js"></script>
 </body>
 </html>

@@ -72,6 +72,7 @@ function makeItem({ kind, origin, subject, key, title, text = '', copyText = nul
     origin,
     subject,
     title,
+    text,
     bodyHtml: text ? renderMarkdown(text).html : '',
     copyText,
     command,
