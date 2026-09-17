@@ -197,6 +197,14 @@ describe('kitchen-sink cycle', () => {
     assert.equal(model.inbox['leftover-worktree:batch-2:worktree'].command, 'git worktree remove "/tmp/harbor-feat-restock-badge"');
   });
 
+  test('enrichment: a closed pull request raises one item, not a bogus stale-lock too', () => {
+    const prUrl = ctx.model.batches['batch-2'].pr.url;
+    const model = buildModel(ctx.raw, { now: NOW, enrichment: { prs: { [prUrl]: { state: 'closed', checks: 'failing' } } } });
+    assert.equal(model.batches['batch-2'].lane, 'stale');
+    assert.ok(model.inbox['pr-closed:batch-2:pr']);
+    assert.equal(model.inbox['stale-lock:batch-2:lock'], undefined);
+  });
+
   test('enrichment: failing checks raise an item', () => {
     const prUrl = ctx.model.batches['batch-2'].pr.url;
     const model = buildModel(ctx.raw, { now: NOW, enrichment: { prs: { [prUrl]: { state: 'open', checks: 'failing', reviewDecision: 'CHANGES_REQUESTED' } } } });

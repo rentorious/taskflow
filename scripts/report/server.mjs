@@ -305,6 +305,7 @@ export async function createApp({ dir, slug = null, project = null, version = 'd
   return {
     server,
     getState,
+    enrich,
     /** Bind to loopback, walking up from `wanted` when a port is taken. */
     listen(wanted, attempts = 20) {
       return new Promise((resolveListen, reject) => {

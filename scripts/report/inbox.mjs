@@ -189,7 +189,8 @@ function derivedItems(b, order) {
   const base = { origin: 'derived', subject, order };
   const out = [];
 
-  if (b.locked && (b.laneReason === 'stale-lock' || b.lane === 'stale')) {
+  // A closed pull request keeps its lock like any finished batch; that case has its own item below.
+  if (b.locked && (b.laneReason === 'stale-lock' || (b.lane === 'stale' && b.laneReason !== 'pr-closed'))) {
     out.push(makeItem({
       ...base, kind: 'stale-lock', key: 'lock',
       title: `Release the stale lock on batch ${b.number ?? b.key}`,

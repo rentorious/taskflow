@@ -65,15 +65,23 @@ const app = await createApp({ dir, slug: option('--dev-slug'), project: option('
 // -- one-shot modes -------------------------------------------------------------
 
 if (flag('--print-model')) {
-  const { model } = await app.getState(option('--cycle', 'live'));
-  process.stdout.write(`${JSON.stringify(model, null, 2)}\n`);
+  let { model } = await app.getState(option('--cycle', 'live'));
+  if (enrich) {
+    // Pull request states arrive in the background; wait for them once.
+    await enrich.settle();
+    ({ model } = await app.getState(option('--cycle', 'live'), { force: true }));
+  }
   await app.close();
+  enrich?.close();
+  // Exit only once the pipe has drained: process.exit() drops whatever is still
+  // buffered, which truncates the JSON at the 64 KB pipe size.
+  await new Promise((done) => process.stdout.write(`${JSON.stringify(model, null, 2)}\n`, done));
   process.exit(0);
 }
 
 if (option('--snapshot')) {
   const { writeSnapshot } = await import('./report/snapshot.mjs');
-  const out = await writeSnapshot(app, { cycle: option('--cycle', 'live'), outFile: resolve(option('--snapshot')), dir });
+  const out = await writeSnapshot(app, { cycle: option('--cycle', 'live'), outFile: resolve(option('--snapshot')) });
   console.log(`Snapshot written to ${out.path}`);
   if (out.outsideCycle) console.error('Warning: the snapshot embeds ticket text and sits outside the taskflow output directory. Screenshots will not load from there.');
   await app.close();
