@@ -1,5 +1,7 @@
 # Live Report Server Design
 
+> **Superseded in 1.4.0** by [`2026-09-17-report-rework-design.md`](2026-09-17-report-rework-design.md). Kept for history.
+
 **Date:** 2026-03-29
 **Status:** Approved
 **Author:** Ognjen Popovic

@@ -38,8 +38,8 @@ Follow these steps in order. Do not skip or reorder steps.
 
 1. Read `.claude/taskflow-config.json` — take `output_dir`, `project_name`, and `provider`. Resolve `output_dir` to an absolute path under the project root.
 
-2. If `<output_dir>` does not exist, or contains nothing except `archive/` and/or a `.report-server.pid`:
-   - Remove a stale `.report-server.pid` if one is there (see Step 5).
+2. If `<output_dir>` does not exist, or contains nothing except `archive/` and/or the report server's own files (`.report-server.pid`, `.report-server.json`):
+   - Remove stale report server files if any are there (see Step 5).
    - If `--purge` was passed and `archive/` exists, continue — a purge still has archives to delete.
    - Otherwise print: "Nothing to clean — no active taskflow cycle in `<output_dir>`." and stop.
 
@@ -47,7 +47,7 @@ Follow these steps in order. Do not skip or reorder steps.
 
 ### Step 2: Inventory the Current Cycle
 
-Build the list of cycle items at the top level of `<output_dir>`. **Everything except `archive/` and `.report-server.pid` is part of the cycle**, including dotfiles and files this skill does not recognize:
+Build the list of cycle items at the top level of `<output_dir>`. **Everything except `archive/`, `.report-server.pid` and `.report-server.json` is part of the cycle**, including dotfiles and files this skill does not recognize:
 
 | Item                                                    | Written by         |
 | ------------------------------------------------------- | ------------------ |
@@ -56,7 +56,9 @@ Build the list of cycle items at the top level of `<output_dir>`. **Everything e
 | `tasks/` (per-task plan files)                          | triage             |
 | `attachments/` (downloaded task attachments)            | triage             |
 | `triage-<developer_slug>-<YYYY-MM-DD>.md` (summaries)   | triage             |
-| `triage-report.html`                                    | triage             |
+| `report-inbox.<developer_slug>.json` (inbox ticks)      | report             |
+| `report-snapshot.html` (if one was written)             | report             |
+| `triage-report.html` (cycles from before 1.4.0)         | triage             |
 | anything else at the top level                          | unknown — include it and name it in the report |
 
 Then read:
@@ -83,7 +85,7 @@ Run every check and collect the findings before changing anything.
 
 3. **Open PRs.** Batches with `status: "pr-created"` are informational only: the PR lives on the remote and the archived batch file keeps its `pr_url`.
 
-4. **Report server.** Read `<output_dir>/.report-server.pid` if present and check `kill -0 <pid> 2>/dev/null`. Record one of: alive / stale / absent.
+4. **Report server.** Read the pid from `<output_dir>/.report-server.json` (or `.report-server.pid` if that is all there is) and check `kill -0 <pid> 2>/dev/null`. Record one of: alive / stale / absent.
 
 ---
 
@@ -98,10 +100,12 @@ If `--dry-run` was passed: print the plan — mode (archive or purge), the targe
 Mirror the `/taskflow:report --stop` flow:
 
 - If the PID is alive: `kill <pid>`, then poll `kill -0 <pid>` for up to 2 seconds until it fails.
-- Remove `<output_dir>/.report-server.pid` whether the process was alive or stale.
-- If there is no PID file: nothing to do.
+- Remove `<output_dir>/.report-server.pid` and `<output_dir>/.report-server.json` whether the process was alive or stale. (A current server removes both itself on exit; older ones leave them.)
+- If neither file exists: nothing to do.
 
-Reason: the server reads `<output_dir>/state.*.json` and `batches/`. Once those move it only shows "no state", and on `--purge` it would keep an open handle on a deleted directory.
+Reason: the server reads `<output_dir>/state.*.json` and `batches/`. Once those move it only shows an empty cycle, and on `--purge` it would keep an open handle on a deleted directory.
+
+The archived cycle stays readable: after the next `/taskflow:report`, the page's cycle picker lists every `archive/<cycle-date>/`, read-only, together with the inbox ticks that were archived with it.
 
 ---
 
@@ -145,7 +149,7 @@ Taskflow state cleaned: <archived | purged>
 Archive:        <output_dir>/archive/<cycle-date>/          (omit for purge)
 Cycle:          triaged <last_triage> — <T> tasks, <B> batches
                   <n> pending · <n> in-progress · <n> pr-created · <n> other
-Moved/Deleted:  <n> plan files, <n> attachments, <n> summaries, triage-report.html
+Moved/Deleted:  <n> plan files, <n> attachments, <n> summaries, inbox ticks
 Report server:  stopped (pid <pid>) | stale pid file removed | not running
 
 Worktrees left in place (remove when done):
@@ -200,6 +204,6 @@ rmdir <output_dir>/archive/<cycle-date>
 | Config file       | `.claude/taskflow-config.json` (never modified)                                          |
 | Archive root      | `<config.output_dir>/archive/`                                                           |
 | Cycle archive     | `<config.output_dir>/archive/<cycle-date>/` — same layout as the live `<config.output_dir>` |
-| Report server PID | `<config.output_dir>/.report-server.pid` (removed)                                       |
+| Report server files | `<config.output_dir>/.report-server.pid` and `.report-server.json` (removed)           |
 
 All paths are relative to the project root. Use absolute paths when moving or deleting files.
