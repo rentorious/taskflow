@@ -598,9 +598,11 @@ function renderTop() {
   $('cycle-line').textContent = sentences.join(' ');
   document.title = m.counts.needsYou ? `(${m.counts.needsYou}) Taskflow` : 'Taskflow';
 
+  // An archive never changes, so "Live" would be a lie there.
   const live = $('live');
-  live.dataset.state = state.live;
-  live.textContent = { live: 'Live', connecting: 'Connecting', retrying: 'Reconnecting', snapshot: `Snapshot from ${new Date(m.generatedAt).toLocaleString('en-GB')}` }[state.live];
+  const liveState = c.isArchive && !SNAPSHOT ? 'archive' : state.live;
+  live.dataset.state = liveState;
+  live.textContent = { live: 'Live', connecting: 'Connecting', retrying: 'Reconnecting', archive: 'Archive', snapshot: `Snapshot from ${new Date(m.generatedAt).toLocaleString('en-GB')}` }[liveState];
 
   const pick = $('cycle-select');
   pick.closest('label').hidden = Boolean(SNAPSHOT) || state.cycles.length < 2;
