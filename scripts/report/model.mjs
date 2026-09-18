@@ -500,6 +500,7 @@ export function buildModel(raw, { human = null, ticks = null, enrichment = null,
       baseBranch: raw.config?.baseBranch ?? null,
       summaryFile: raw.summaryFile ?? null,
       providerComments: raw.config?.providerComments === true,
+      providerEnrichment: raw.config?.providerEnrichment === true,
     },
     health: {
       ok: problems.length === 0,

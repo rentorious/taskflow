@@ -41,6 +41,7 @@ After installing, restart Claude Code for the skills to become available.
 
 - **A queue grouped by what happens next.** Needs you, ready to start, in flight, pull request open, blocked, shipped and stale, not batched. "Ready to start" is exactly what `/taskflow:implement` would claim, in the order it would claim it; "Blocked" names the batches it waits on.
 - **An inbox.** Questions for the client, provider writes that failed and must be pasted by hand, fixes to verify and close, and broken pipeline state such as a stale lock. Copy the text, tick the item off, and it moves to "waiting" or out of the way. Ticks live in `report-inbox.<slug>.json`; the report never writes pipeline state.
+- **Answers, and a gate that reads them.** Triage writes one entry per question. You type what the client or a colleague said into the report, with who said it; either/or questions are one tap. A batch with an unanswered *blocking* question sits under Blocked, and `/taskflow:implement` will not start it: claiming goes through `scripts/taskflow.mjs claim`, which decides by exit code (`2` = questions open) and lists what is missing. There is no force flag; the way past a question is to drop it, with a reason. Implement reads the answers next to each plan. Answers live in `answers.json`, keyed by task rather than by cycle, so they survive `/taskflow:clean` and re-attach on the next triage.
 - **The plan next to the queue.** Each batch opens with its command, branch, dependencies, time estimates, the per-task plans and screenshots.
 - **Pull request state and leftover worktrees**, when `gh` and `git` are available. Without them the report still works.
 - **Archives.** Every cycle archived by `/taskflow:clean` stays selectable, read-only.
@@ -71,6 +72,7 @@ The config file lives at `.claude/taskflow-config.json` in your project. It's ge
 | `full_lint` | Full-repo lint command |
 | `full_typecheck` | Full-repo typecheck command |
 | `provider_comments` | **Default `false`.** Post developer-voice comments back to the provider. See below |
+| `provider_enrichment` | **Default `false`.** Rewrite task descriptions and link duplicate tasks in the provider. See below |
 
 ### Provider comments (off by default)
 
@@ -81,12 +83,28 @@ With `provider_comments` absent or `false`:
 - No comments are posted, ever.
 - Clarification questions for low-confidence tasks are still drafted — they land in the task's plan file under `## Open Question` and in the triage summary under **Low Confidence Tasks**, ready to paste manually.
 - PR URLs still land in the batch file and the implement terminal summary; the PR body links every task.
-- Status transitions (`to do` → `in progress` → `code review`), description enrichment, and duplicate task links are unaffected — those overwrite rather than accumulate.
+- Status transitions (`to do` → `in progress` → `code review`) are unaffected.
 
 To opt back in, set it in `.claude/taskflow-config.json`:
 
 ```json
 "provider_comments": true
+```
+
+### Provider enrichment (off by default)
+
+Triage used to rewrite each task's description with its findings and link duplicate tasks, unconditionally. The ticket is the client's document, so that is now **off by default** too. With `provider_enrichment` absent or `false`, what triage learned goes into the plan file's "What Needs to Change", duplicates are recorded in the index and the summary, and **the only thing taskflow writes to the provider is a task's status.** Set `"provider_enrichment": true` to opt back in; descriptions are then appended to, never replaced.
+
+### The CLI
+
+`scripts/taskflow.mjs` is what the skills call; it is handy in a terminal too. All commands take `--dir <output_dir>` (or find it from `.claude/taskflow-config.json` above the working directory) and `--dev-slug` when several developers share the directory.
+
+```bash
+node scripts/taskflow.mjs status              # what is next, and which answers are missing
+node scripts/taskflow.mjs claim [batch-key]   # exit 0 claimed, 2 questions open, 3 locked, 5 dependency, 6 nothing, 7 complete
+node scripts/taskflow.mjs release <batch-key> # give a claim back
+node scripts/taskflow.mjs answers <batch-key> # rewrite answers/<task>.md after recording more answers
+node scripts/taskflow.mjs questions <task-id> # JSON: exact wording and recorded answers, for triage to reuse
 ```
 
 ## Development

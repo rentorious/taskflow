@@ -71,6 +71,7 @@ export function findProject(dir) {
               projectName: config.project_name ?? null,
               baseBranch: config.base_branch ?? null,
               providerComments: config.provider_comments === true,
+              providerEnrichment: config.provider_enrichment === true,
             },
           };
         }

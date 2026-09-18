@@ -237,8 +237,8 @@ if (command === 'questions') {
   // Always JSON: triage copies an unchanged question word for word, and only JSON keeps it exact.
   process.stdout.write(`${JSON.stringify({
     task: subject,
-    note: 'To keep an answer attached, reuse the key AND copy title, text and options exactly. Any change to them marks the recorded answer as needing confirmation.',
-    questions: questionsOfTask(subject).map((i) => ({ key: i.id.split(':').slice(2).join(':'), title: i.title, text: i.text, options: i.options, blocking: i.blocking, to: i.to, state: i.state, answered: Boolean(i.answer) })),
+    note: 'To keep an answer attached, reuse the key AND copy title, text and options exactly. Any change to them marks the recorded answer as needing confirmation. Plan with any answer given here.',
+    questions: questionsOfTask(subject).map((i) => ({ key: i.id.split(':').slice(2).join(':'), title: i.title, text: i.text, options: i.options, blocking: i.blocking, to: i.to, state: i.state, answer: i.answer?.body ?? null })),
     no_longer_asked: orphansOfTask(subject).map((e) => ({ key: e.key, title: e.title, text: e.text, answers: (e.answers ?? []).map((a) => a.body) })),
   }, null, 2)}\n`);
   process.exit(EXIT.OK);

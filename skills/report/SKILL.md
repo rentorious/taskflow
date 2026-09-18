@@ -7,7 +7,7 @@ description: Use when asked to view triage or implementation progress, see what 
 
 Start the report: a local page that groups the cycle by what happens next — what needs the developer, what is ready to claim, what is in flight, which pull requests are open, what is blocked and on what. It updates itself as `/taskflow:implement` sessions work; nobody needs to reload it.
 
-The report only reads pipeline state. The one file it writes is `<output_dir>/report-inbox.<slug>.json`, where it remembers which inbox items the developer ticked off.
+The report only reads pipeline state. It writes two files of its own, both about what the developer did, never about the pipeline: `<output_dir>/report-inbox.<slug>.json`, which inbox items were ticked off (per cycle, archived with it), and `<output_dir>/answers.json`, the answers to questions (per project; it outlives `/taskflow:clean`). Nothing else may write `answers.json`. Never edit it by hand or on the developer's behalf: an answer is recorded by typing it into the page.
 
 ## Invocation
 
@@ -106,6 +106,7 @@ node <script_path> --dir <absolute_output_dir> --snapshot <absolute_output_dir>/
 
 Use this to answer questions about the report without opening it.
 
+- **Answering questions.** Each question opens in the detail pane with a field for the answer and one for who said it. Triage's `options` become one-tap choices. A question can also be marked sent, dropped (a reason is required), or reopened; when a re-triage rewords a question that already has an answer, the page asks whether the answer still applies. **A batch with an unanswered blocking question sits under Blocked as "waits on N answers", and `/taskflow:implement` refuses it** until each one is answered or dropped. The same verdict is available in the terminal: `node <plugin>/scripts/taskflow.mjs status --dir <output_dir>`.
 - **Needs you** — questions to send to the client, provider writes that failed and must be pasted by hand, fixes to verify and close, suggested new tickets, and broken pipeline state (a stale lock, a batch in progress with no lock, a dependency that can never resolve, a pull request closed without merging). Items come from `needs[]` and `suggestions[]` in the index; for cycles triaged before those existed, from each plan file's `## Open Question`.
 - **Ready to start** — exactly the batches `/taskflow:implement` would claim, in the order it would claim them.
 - **In flight**, **Pull request open**, **Blocked** (with the batches it waits on), **Shipped and stale**, **Not batched**.

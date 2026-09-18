@@ -1,6 +1,6 @@
 # Hosted dashboard with answers and an implement gate — design
 
-Status: proposed 2026-09-18. Builds on `2026-09-17-report-rework-design.md` (1.4.0).
+Status: Phase 0 implemented in 1.5.0 (2026-09-18); Phases 1–3 proposed. Builds on `2026-09-17-report-rework-design.md` (1.4.0).
 
 ## Goal
 
@@ -332,7 +332,13 @@ Migrations: numbered `.sql` files applied at boot under a Postgres advisory lock
 
 ## Phases
 
-**Phase 0 — structured questions and a local gate (no infrastructure).**
+**Phase 0 — structured questions and a local gate (no infrastructure). Done in 1.5.0.**
+As built: `gate.mjs` (pure; `blocksClaim`, `evaluateClaim`), `answers.mjs` + `human.mjs` (the `HumanStore`
+interface over `answers.json` and the per-cycle tick file), `cycle.mjs` (the one path from a directory to a
+view model, shared by server and CLI), `scripts/taskflow.mjs`, answer routes and composer, index schema v3,
+`provider_enrichment` flag. Differences from the text below: there is no `<output_dir>/claim.json`; the
+claim record is `batches/<key>.lock/claim.json`. Exit `7` was added for "already complete or stale".
+
 triage writes one need per question; status-only patch to triage; `gate.mjs` + tests; `HumanStore`
 interface with the file backend; answer box in the UI; `taskflow claim` against the local store;
 implement uses it. One-off backfill of the four prose questions in the 09-18 cycle.

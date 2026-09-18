@@ -1,11 +1,11 @@
 ---
 name: clean
-description: Use when asked to wipe, clean, reset, or archive the local taskflow state, start a fresh triage cycle, or when user invokes /taskflow:clean. Stops the report server and moves the current cycle's index, batches, plans, attachments and summaries into an archive folder (or deletes everything with --purge). Local files only — never touches the provider.
+description: Use when asked to wipe, clean, reset, or archive the local taskflow state, start a fresh triage cycle, or when user invokes /taskflow:clean. Stops the report server and moves the current cycle's index, batches, plans, attachments and summaries into an archive folder (or deletes everything with --purge). Recorded answers are kept. Local files only — never touches the provider.
 ---
 
 # Taskflow Clean (`/taskflow:clean`)
 
-Reset the local taskflow state for this project so the next `/taskflow:triage` starts from a blank index. By default the current cycle is **archived**, not deleted: every cycle file under `<config.output_dir>` moves into `<config.output_dir>/archive/<cycle-date>/`. `--purge` deletes the current cycle and every archive.
+Reset the local taskflow state for this project so the next `/taskflow:triage` starts from a blank index. By default the current cycle is **archived**, not deleted: every cycle file under `<config.output_dir>` moves into `<config.output_dir>/archive/<cycle-date>/`. `--purge` deletes the current cycle and every archive. Either way the recorded answers (`answers.json`) stay where they are: they belong to the project, not to a cycle.
 
 Scope is **local files only**. This skill never calls the provider — task statuses, descriptions, links and comments in ClickUp/Jira are left exactly as they are. It never touches `.claude/taskflow-config.json`, Claude memory (developer identity), git worktrees, or branches.
 
@@ -13,7 +13,8 @@ Scope is **local files only**. This skill never calls the provider — task stat
 
 ```
 /taskflow:clean              # Archive the current cycle to <output_dir>/archive/<cycle-date>/
-/taskflow:clean --purge      # Delete the current cycle AND all archives (asks for confirmation)
+/taskflow:clean --purge      # Delete the current cycle AND all archives (asks for confirmation); keeps answers.json
+/taskflow:clean --purge --include-answers   # ...and the recorded answers too
 /taskflow:clean --dry-run    # Print what would be archived/deleted; change nothing (combine with --purge to preview a purge)
 ```
 
@@ -38,7 +39,7 @@ Follow these steps in order. Do not skip or reorder steps.
 
 1. Read `.claude/taskflow-config.json` — take `output_dir`, `project_name`, and `provider`. Resolve `output_dir` to an absolute path under the project root.
 
-2. If `<output_dir>` does not exist, or contains nothing except `archive/` and/or the report server's own files (`.report-server.pid`, `.report-server.json`):
+2. If `<output_dir>` does not exist, or contains nothing except `archive/`, the recorded answers (`answers.json`, `answers.json.corrupt-*`) and/or the report server's own files (`.report-server.pid`, `.report-server.json`):
    - Remove stale report server files if any are there (see Step 5).
    - If `--purge` was passed and `archive/` exists, continue — a purge still has archives to delete.
    - Otherwise print: "Nothing to clean — no active taskflow cycle in `<output_dir>`." and stop.
@@ -47,7 +48,9 @@ Follow these steps in order. Do not skip or reorder steps.
 
 ### Step 2: Inventory the Current Cycle
 
-Build the list of cycle items at the top level of `<output_dir>`. **Everything except `archive/`, `.report-server.pid` and `.report-server.json` is part of the cycle**, including dotfiles and files this skill does not recognize:
+Build the list of cycle items at the top level of `<output_dir>`. **Everything except `archive/`, `answers.json`, `answers.json.corrupt-*`, `.report-server.pid` and `.report-server.json` is part of the cycle**, including dotfiles and files this skill does not recognize.
+
+**`answers.json` is never part of a cycle. Do not archive it, move it, rename it or delete it.** It holds what the client and colleagues answered, keyed by task, and it is the one thing under `<output_dir>` that cannot be regenerated: the next triage re-attaches those answers to the questions it asks. An `answers.json.corrupt-<timestamp>` beside it is a damaged copy the report set aside; leave that to the developer too.
 
 | Item                                                    | Written by         |
 | ------------------------------------------------------- | ------------------ |
@@ -57,6 +60,7 @@ Build the list of cycle items at the top level of `<output_dir>`. **Everything e
 | `attachments/` (downloaded task attachments)            | triage             |
 | `triage-<developer_slug>-<YYYY-MM-DD>.md` (summaries)   | triage             |
 | `report-inbox.<developer_slug>.json` (inbox ticks)      | report             |
+| `answers/` (per-task answer files, rendered at claim time) | taskflow CLI    |
 | `report-snapshot.html` (if one was written)             | report             |
 | `triage-report.html` (cycles from before 1.4.0)         | triage             |
 | anything else at the top level                          | unknown — include it and name it in the report |
@@ -117,7 +121,7 @@ The archived cycle stays readable: after the next `/taskflow:report`, the page's
 
 3. `mv` every inventoried item from Step 2 into `<target>/`, preserving names. Batch `.lock/` directories move with `batches/` as-is — they record which batches were claimed at archive time.
 
-4. Verify: `<output_dir>` now contains only `archive/`. If any cycle item remains, report it and stop — do **not** retry with `rm`.
+4. Verify: `<output_dir>` now contains only `archive/` and, if there were any, `answers.json` / `answers.json.corrupt-*`. If any cycle item remains, report it and stop — do **not** retry with `rm`. If `answers.json` existed before and is gone now, it was moved by mistake: move it back from `<target>/` before anything else.
 
 ---
 
@@ -131,9 +135,11 @@ The archived cycle stays readable: after the next `/taskflow:report`, the page's
 
    Anything other than exactly `yes` → stop with "Purge cancelled. Nothing was changed."
 
-3. Delete every top-level entry inside `<output_dir>`, including `archive/`. Keep `<output_dir>` itself as an empty directory so the `.gitignore` entry and the `output_dir` setting still point at something real.
+3. Delete every top-level entry inside `<output_dir>`, including `archive/`, **except `answers.json` and `answers.json.corrupt-*`**. Keep `<output_dir>` itself so the `.gitignore` entry and the `output_dir` setting still point at something real.
 
-4. Verify `<output_dir>` is empty.
+   Recorded answers survive a purge unless the invocation was `/taskflow:clean --purge --include-answers`. In that case, name them in the question from step 2 ("…and <K> recorded answers from clients and colleagues, which cannot be regenerated"), and delete them only after the same `yes`.
+
+4. Verify `<output_dir>` holds nothing but the kept answers files (or is empty, with `--include-answers`).
 
 Never delete anything outside `<output_dir>`. Never delete `.claude/taskflow-config.json`.
 
@@ -169,7 +175,7 @@ Omit the Worktrees block when there are none. Name any unrecognized top-level fi
 
 - **`mv` fails midway** (permissions, cross-device): stop immediately, list what has and has not moved, and print the `mv` commands needed to either finish or roll back. Do not fall back to copy-then-delete.
 - **Report server will not exit** (`kill -0` still succeeds after 2 s): `kill -9 <pid>`, re-check, then continue. If it still survives, report the PID and continue — a live server pointed at an empty directory is harmless.
-- **Unknown files at the top level** of `<output_dir>`: never skip them silently. Archive or purge them with the rest and name them in the report.
+- **Unknown files at the top level** of `<output_dir>`: never skip them silently. Archive or purge them with the rest and name them in the report. `answers.json` and `answers.json.corrupt-*` are not unknown: they always stay (Step 2).
 - **Config has no `output_dir`**: stop — "Config has no `output_dir`. Run `/taskflow:setup --reconfigure`."
 
 ---
@@ -186,7 +192,7 @@ Omit the Worktrees block when there are none. Name any unrecognized top-level fi
 
 ## Restoring an Archive
 
-There is no `--restore`; the archive layout is the live layout, and archives contain no dotfiles. To bring a cycle back:
+There is no `--restore`; the archive layout is the live layout, and archives contain no dotfiles. Recorded answers were never archived, so they are already in place. To bring a cycle back:
 
 ```bash
 mv <output_dir>/archive/<cycle-date>/* <output_dir>/
@@ -205,5 +211,6 @@ rmdir <output_dir>/archive/<cycle-date>
 | Archive root      | `<config.output_dir>/archive/`                                                           |
 | Cycle archive     | `<config.output_dir>/archive/<cycle-date>/` — same layout as the live `<config.output_dir>` |
 | Report server files | `<config.output_dir>/.report-server.pid` and `.report-server.json` (removed)           |
+| Recorded answers  | `<config.output_dir>/answers.json` (+ `answers.json.corrupt-*`) — **never moved or deleted**, except by `--purge --include-answers` |
 
 All paths are relative to the project root. Use absolute paths when moving or deleting files.

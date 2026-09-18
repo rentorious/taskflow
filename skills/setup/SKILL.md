@@ -385,7 +385,8 @@ The setup wizard produces a config file matching this exact schema. All fields a
   "install_command": "<package install command>",
   "full_lint": "<full repo lint command or null>",
   "full_typecheck": "<full repo typecheck command or null>",
-  "provider_comments": false
+  "provider_comments": false,
+  "provider_enrichment": false
 }
 ```
 
@@ -408,7 +409,9 @@ The setup wizard produces a config file matching this exact schema. All fields a
 | `full_typecheck` | Command to typecheck the entire repo. `null` if not available |
 | `provider_comments` | **Default `false`.** When `false` (or absent), triage and implement never post developer-voice comments back to the provider — the content is written to local plan/summary files instead. Set to `true` only to opt back in. Comment volume counts against provider storage/usage quotas (ClickUp free plan), which is why this ships off |
 
-**Always write `provider_comments: false` in a newly generated config.** Do not ask the user about it during the wizard — it is an opt-in knob, not a setup decision.
+| `provider_enrichment` | **Default `false`.** When `false` (or absent), triage never rewrites a task's description and never links tasks in the provider; what it learned goes into the local plan files. With both flags off, the only thing taskflow ever writes to the provider is a task's status |
+
+**Always write `provider_comments: false` and `provider_enrichment: false` in a newly generated config.** Do not ask the user about them during the wizard — they are opt-in knobs, not setup decisions.
 
 ---
 

@@ -68,7 +68,9 @@ The version hash leaves out clock-driven fields so idle tabs do not re-render.
 ## Lanes
 
 Guiding rule: **"Ready" equals, in the same order, what `/taskflow:implement` with no arguments
-would auto-claim.** The rules mirror Step 1 of `skills/implement/SKILL.md`; change them together.
+would auto-claim.** Since 1.5.0 that holds by construction: implement claims through
+`scripts/taskflow.mjs claim`, which runs `gate.mjs` over this same model and takes the Ready lane.
+The skill no longer restates the rules.
 
 - A dependency is satisfied only when its *batch file* says `pr-created` or `done` — not merged.
 - Claim order is numeric on `batch-(\d+)`; `batch-10` must not sort before `batch-2`.
@@ -89,13 +91,15 @@ First match wins:
 | 8 | `pending` or no batch file | yes | lock younger than 10 minutes | in-flight (`claiming`) | implement locks first and writes `in-progress` only after a round of provider calls |
 | 9 | `pending` or no batch file | yes | lock 10 minutes or older | blocked (`stale-lock`) | raises an item with the `--unlock` command |
 | 10 | `pending` | no | every task stale in the index | stale (`tasks-left-todo`) | |
-| 11 | `pending` or no batch file | no | every dependency satisfied | ready, `claimOrder = n` | `stackOn` names an unmerged dependency branch |
-| 12 | `pending` or no batch file | no | a dependency unsatisfied | blocked | `deps`, `dep-stale`, `dep-missing` or `dep-cycle` |
-| 13 | unknown status string | any | | treated as pending | flagged, and a health problem |
-| 14 | batch file unreadable | any | | last good copy, else as missing | flagged, and a health problem |
+| 11 | `pending` or no batch file | no | a dependency unsatisfied | blocked | `deps`, `dep-stale`, `dep-missing` or `dep-cycle`. Outranks row 12: answering alone would not free the batch |
+| 12 | `pending` or no batch file | no | a blocking question is not answered or dropped (1.5.0) | blocked (`waiting-on-answers`) | questions on tasks that left "to do" do not count |
+| 13 | `pending` or no batch file | no | otherwise | ready, `claimOrder = n` | `stackOn` names an unmerged dependency branch |
+| 14 | unknown status string | any | | treated as pending | flagged, and a health problem |
+| 15 | batch file unreadable | any | | last good copy, else as missing | flagged, and a health problem |
 
-A claimable batch with an open client question **stays in Ready** with a marker. The lane never
-claims something different from what implement will do.
+Until 1.5.0 a claimable batch with an open client question stayed in Ready with a marker. It now
+leaves Ready when the question is *blocking*, because implement refuses it; a non-blocking open
+question still only marks the row. See `2026-09-18-hosted-dashboard-design.md`.
 
 ## Inbox
 

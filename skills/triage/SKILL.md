@@ -39,19 +39,25 @@ Before starting, verify:
 
 ---
 
-## Provider Comments — DISABLED by default
+## Provider Writes — status only by default
 
-Posting developer-voice comments back to the provider is **off** unless `config.provider_comments` is exactly `true`. A missing key, `null`, or `false` all mean off. Reason: every comment is permanent provider-side storage, and comment volume counts against free-plan storage/usage quotas.
+Taskflow writes to the provider as little as it can. The ticket is the client's document; the plan files and the report are ours. Three kinds of write exist, and two of them are off unless the config turns them on:
 
-**When the flag is off (the default):**
+| Write | Config flag | Default |
+| ----- | ----------- | ------- |
+| Task status change | none | always allowed (triage itself makes none; implement does) |
+| Comments (`add_comment`) | `provider_comments` | **off** |
+| Description enrichment (`update_task` with a `description`) and task links (`link_tasks`) | `provider_enrichment` | **off** |
 
-- Never call `add_comment`, for any reason, anywhere in this workflow.
-- Every gated block below has a **local fallback** — write the content that would have been commented into the plan file and/or the summary file instead. Nothing is lost; it just lands locally.
-- Do not print "commented in the provider" or similar in terminal output or the summary file.
+A flag is on only when it is exactly `true`. A missing key, `null`, or `false` all mean off.
 
-**When `config.provider_comments` is `true`:** run the gated blocks exactly as written.
+**When a flag is off:**
 
-**Not gated** (these overwrite rather than accumulate, so they do not grow storage): `update_task` status changes, `update_task` description enrichment, and `link_tasks`.
+- Never make that call, for any reason, anywhere in this workflow — not as a courtesy, not because a step further down seems to need it.
+- Every gated block below has a **local fallback**: the content lands in the plan file, the index and the summary instead. Nothing is lost.
+- Do not print "updated in the provider", "commented in the provider", "linked in the provider" or similar in terminal output or the summary file.
+
+**When a flag is `true`:** run the blocks gated by that flag exactly as written.
 
 ---
 
@@ -251,8 +257,8 @@ Classification agents run in isolation and cannot see each other's results. This
 **1. Duplicates** — two tasks describing the same defect or request. Compare titles, summaries, and any attachments viewed in Step 2 (two screenshots of the same broken page = strong duplicate signal).
 
 - Pick the canonical task: the one with more context, or the older one if equal.
-- For the duplicate: call `link_tasks(duplicate_id, canonical_id)` to link them in the provider. The link is not gated — post it always.
-- **Comment (gated — see "Provider Comments" above).** If `config.provider_comments` is `true`, also `add_comment` on the duplicate in the developer's voice, e.g. "This looks like the same issue as <canonical task title> — tracking it there." If the flag is off, skip the comment — the provider link plus the `duplicate_of` entry in the index and the Duplicates section of the summary already record it.
+- **Link (gated — see "Provider Writes" above).** Only if `config.provider_enrichment` is `true`: call `link_tasks(duplicate_id, canonical_id)`. Flag off (default): make no provider call. The `duplicate_of` entry in the index and the Duplicates section of the summary record it.
+- **Comment (gated).** Only if `config.provider_comments` is `true`: `add_comment` on the duplicate in the developer's voice, e.g. "This looks like the same issue as <canonical task title> — tracking it there." Flag off: skip it.
 - The duplicate gets `batch: null` and `duplicate_of: "<canonical-task-id>"` in the index. Do not write a plan file for it.
 - Never change the duplicate's status or close it — leave that to the developer.
 
@@ -264,57 +270,71 @@ For every related group, add a "## Related Tasks" section to each member's plan 
 
 ---
 
-### Step 4: Enrich Task Descriptions
+### Step 4: Draft the Questions
 
-After classification, update each task in the provider based on confidence level.
+Anything you need from a person before a task can be built becomes a **question**. Questions are the input of the claim gate: `/taskflow:implement` refuses to start a batch while one of its blocking questions has no recorded answer. The developer gets the answers from the client or a colleague and types them into the report. So a question has to be something a person can answer on its own, and the report has to be able to tell whether each one was.
 
-**Important voice guidelines — the enrichment must sound like the developer wrote it, not an AI:**
+**Locate the taskflow CLI first.** It ships with this plugin at `scripts/taskflow.mjs`. Resolve it in this order and stop at the first path where `test -f <path>` succeeds:
 
-- Write in first person if helpful ("Need to check...", "Looks like...", "This is probably...")
-- Use short sentences, conversational tone
-- No bullet-pointed "Summary of changes" headers
-- No phrases like "This task involves...", "Upon analysis...", "As per the requirements..."
-- Be technical and direct — mention file names, component names, service names where known
+1. `${CLAUDE_PLUGIN_ROOT}/scripts/taskflow.mjs`
+2. `<skill base directory>/../../scripts/taskflow.mjs`, where the skill base directory is the one announced at the top of this skill when it was loaded (it ends in `skills/triage`).
 
-**For `confidence: high` tasks:**
-Call `update_task(id, {description: ...})` to update the task description. Include:
+Never reuse a path remembered from an earlier session. If neither exists, carry on without it and tell the developer at the end that recorded answers may ask to be re-confirmed.
 
-- What's broken or what needs to be built (1–2 sentences)
-- Which part of the codebase is involved (component name, service name, route path)
-- The intended approach (concise)
+#### 4a. When to ask
 
-Example enrichment:
+- Every `confidence: low` task gets at least one question, and it is `blocking: true`.
+- A `confidence: medium` or `high` task gets a question for each open point that changes **what** gets built. `blocking: true` when the Approach depends on the answer. `blocking: false` when you can build on a stated assumption and only want it confirmed — write that assumption into the plan's "Risks / Unknowns".
+- Do not ask what the ticket, its comments or its attachments already answer. Do not ask about **how** to build it; that is your job.
 
-> "Pagination on the inventory finder is capping at 25 results. The issue is in the `InventoryList` component — the query param is hardcoded to `limit: 25`. Need to read the total count from the API response and thread it through to the pagination component."
+#### 4b. One question per entry
 
-**For `confidence: medium` tasks:**
-Call `update_task(id, {description: ...})` to update the description with best-guess context. Include what's clear and flag what's uncertain in-line.
+**Never bundle.** "Do balances expire, and can a card be split across orders?" is two entries. If your draft contains "and", "also" or a numbered list, split it. The developer ticks questions off one at a time as answers arrive, and a half-answered bundle would hold the batch with no way to say which half is missing.
 
-Example:
+Each question is one `needs[]` entry in the index (Step 7a):
 
-> "Something's off with the cart totals when a discount is applied. Not sure if it's the discount calculation in `TotalsService` or how the storefront is displaying it — need to test both paths."
+| Field | How to write it |
+| ----- | --------------- |
+| `key` | `q-` plus two to four words, kebab-case: `q-gift-card-expiry`. Lowercase letters, digits and dashes only, 32 characters at most, unique within the task |
+| `title` | Imperative, names who to ask, 80 characters or fewer: "Ask Dana whether gift card balances expire" |
+| `text` | Paste-ready, in the developer's voice, and **self-contained**: the developer pastes this one question into a chat on its own, so it must carry its own context and not lean on the other questions. Markdown allowed |
+| `to` | First name of the person who can answer |
+| `blocking` | See 4a |
+| `options` | Only when the answer is a choice between known alternatives: two to eight short strings, e.g. `["Portrait, 2:3", "Square"]`. The report turns them into one-tap answers. Leave it out for open questions |
 
-**For `confidence: low` tasks:**
+**Voice — it must sound like the developer wrote it, not an AI:** first person, short sentences, conversational; technical and direct where that helps the reader; no "Upon analysis…", no "As per the requirements…". If the task creator's name is known, use it.
 
-1. Call `update_task(id, {description: ...})` with whatever context CAN be determined from the title alone
-2. Draft the clarification question you would ask the task creator, in the developer's voice.
+> "Hey Dana, on the inventory screenshot — is it the totals row that's wrong, or the line items?"
 
-Example clarification question:
+#### 4c. Keep recorded answers attached — reuse the exact wording
 
-> "Hey Derek, I looked at the screenshot but I'm not 100% sure what the ask is. Is it the totals row that's wrong or the line items? And what should it show instead?"
+Answers live outside the cycle, keyed by task and question key, together with the wording they were given for. Before writing questions for a task, ask what is already on record:
 
-Adjust the tone to match what the developer would actually write. If the task creator's name is known, use it in the greeting.
+```bash
+node <taskflow_cli> questions <task-id> --dir <absolute path of config.output_dir>
+```
 
-**Where the question goes (gated — see "Provider Comments" above):**
+It prints JSON: `questions[]` (what is asked today, with `key`, `title`, `text`, `options`, `state` and the recorded `answer`, if any) and `no_longer_asked[]` (answers recorded against questions that are gone).
 
-- `config.provider_comments === true`: call `add_comment(id, ...)` to post it, AND record it locally as below.
-- Flag off (default): do **not** call `add_comment`. Record the question locally only:
-  - Write it under a `## Open Question` heading in the task's plan file (Step 5).
-  - Repeat it verbatim in the "Low Confidence Tasks" section of the summary file (Step 8), so the developer can paste it to the task creator themselves.
+- **The same question as before → copy `key`, `title`, `text` and `options` exactly, character for character.** The report compares the wording. Any edit, even fixing a typo, marks the recorded answer "the question changed" and holds the batch until the developer confirms it still applies. Reword only when the meaning really changed.
+- **A question that already has an `answer` → plan with that answer.** Keep the entry, verbatim, so the answer stays attached and visible; write the plan's Approach as the answer directs.
+- **`no_longer_asked` settles something you were about to ask → do not ask again.** Build the answer into the plan and say in "Risks / Unknowns" where it came from.
+- A genuinely new question gets a new key. Never reuse a key for a different question.
 
-In both cases, also record it in the index as a `needs` entry (Step 7a) with `kind: "question"` and `key: "question"`. That entry is what the report's inbox shows and lets the developer tick off; the plan file and summary copies are for reading.
+#### 4d. Where the questions go
 
-The question must always be drafted and written locally, flag or no flag — disabling comments suppresses the posting, never the thinking.
+- The index, as `needs[]` entries (Step 7a). This is what the report shows and what the gate reads.
+- The task's plan file, under `## Open Question`: one bullet per question, `` `<key>` `` first, then the text (Step 5).
+- The summary file's "Questions for the client" section (Step 8).
+- **Comment (gated — see "Provider Writes" above).** Only if `config.provider_comments` is `true`: also `add_comment(id, ...)` with the question text.
+
+The questions are always drafted and written locally, flags or no flags — a disabled flag suppresses the posting, never the thinking.
+
+#### 4e. Description enrichment (gated — off by default)
+
+**Only if `config.provider_enrichment` is `true`.** Flag off (the default): make no `update_task` call with a description, for any task. What you would have written there is the plan file's "What Needs to Change" section; nothing else is needed.
+
+Flag on: call `update_task(id, {description: ...})` in the developer's voice — what is broken or wanted (1–2 sentences), which part of the codebase is involved, the intended approach. For `confidence: medium`, flag what is uncertain in-line. For `confidence: low`, write only what the title and attachments establish. **Append to the client's description; never replace it.** If the write fails, add an `owed-write` need (Step 7a) holding the text.
 
 ---
 
@@ -368,7 +388,10 @@ Create the `<config.output_dir>/tasks/` directory if it does not exist.
 
 ## Open Question
 
-<For `confidence: low` tasks only: the clarification question drafted in Step 4, verbatim, in the developer's voice. Omit this section entirely for medium/high confidence tasks. If `config.provider_comments` is `true` the same text was also posted as a comment — note "(posted as a comment)" after it.>
+<One bullet per question drafted in Step 4, in the same order as the task's `needs[]`: the key in backticks, whether it blocks, then the text verbatim.
+- `q-<key>` (blocking) — <text>
+- `q-<key>` (does not block; assuming <the assumption>) — <text>
+Omit this section entirely for a task with no questions. If `config.provider_comments` is `true` the same text was also posted as a comment — note "(posted as a comment)" after it.>
 ```
 
 **For `implementable: no` tasks**, use this condensed format:
@@ -445,11 +468,11 @@ Write to `<config.output_dir>/state.<developer_slug>.json`.
 
 This file is the **read-only index** — it contains task classifications and batch assignments. `/taskflow:implement` reads this file but never writes to it.
 
-**Index file schema (`schema_version: 2`):**
+**Index file schema (`schema_version: 3`):**
 
 ```json
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "last_triage": "YYYY-MM-DD",
   "developer": "<Full Name>",
   "developer_id": "<provider_user_id>",
@@ -474,13 +497,21 @@ This file is the **read-only index** — it contains task classifications and ba
       "batch": "<batch-1|batch-2|null>",
       "needs": [
         {
-          "key": "question",
+          "key": "q-<two-to-four-words>",
           "kind": "question",
           "title": "<imperative, 80 characters or fewer, e.g. 'Ask Dana which report is wrong'>",
-          "text": "<the paste-ready text, in the developer's voice (markdown allowed)>",
+          "text": "<one self-contained question, paste-ready, in the developer's voice (markdown allowed)>",
           "to": "<first name of the person who has to answer>",
           "blocking": true,
-          "delivered": "none"
+          "options": ["<only for a choice between known alternatives>", "<…>"]
+        },
+        {
+          "key": "q-<another-question>",
+          "kind": "question",
+          "title": "<…>",
+          "text": "<…>",
+          "to": "<…>",
+          "blocking": false
         }
       ]
     }
@@ -515,19 +546,19 @@ Field notes:
 - `time_estimate_*`: lead with the number or range (`"2-4 hours"`). Anything after a comma or bracket is shown as a caveat, never summed
 - A task you found already fixed gets `batch: null`, `"already_fixed": true` and a `"note"` saying what fixed it and what is left to do before it can be closed (markdown allowed). The report turns that into a "verify and close" item
 
-**`needs` — what this task is waiting on from a human.** This is what the report's "Needs you" inbox reads, so anything that waits on the developer or the client belongs here and not only in prose. Always write the array; write `[]` when there is nothing.
+**`needs` — what this task is waiting on from a human.** One entry per question (Step 4): this is what the report's "Needs you" inbox shows, what the developer answers, and what `/taskflow:implement` checks before it will start the batch. Anything that waits on a person belongs here and not only in prose. Always write the array; write `[]` when there is nothing.
 
 | Field | Meaning |
 |-------|---------|
-| `key` | `[a-z0-9-]`, 32 characters or fewer, unique within the task. Keep it **stable across re-triage**: the report stores what the developer ticked off under this key. Use `question` for the task's clarification question and `dev-notes` for an owed description write |
-| `kind` | `question` — something to ask the client. `owed-write` — a provider write that failed or was skipped and must be done by hand |
+| `key` | `[a-z0-9-]`, 32 characters or fewer, unique within the task, `q-…` for questions. **Stable across re-triage**: recorded answers hang off it. A missing, malformed or repeated key does not make the need go away — the report keeps it, blocking, under a generated key and flags the index as faulty |
+| `kind` | `question` — something to ask a person. `owed-write` — a provider write that was enabled, was attempted, failed, and must now be done by hand |
 | `title` | Imperative and short. It is the row label in the inbox |
-| `text` | Paste-ready, in the developer's voice. For a question this is the same text as the plan file's `## Open Question` |
+| `text` | One self-contained question, paste-ready, in the developer's voice. The same text as the bullet in the plan file's `## Open Question` |
 | `to` | First name of the person who answers (questions only) |
-| `blocking` | `true` when implement cannot sensibly start without it. Every `confidence: low` question is blocking |
-| `delivered` | Questions only. `"none"` — nobody has been asked yet. `"description"` — the question is already in the enriched provider description. `"comment"` — it was posted as a comment (`config.provider_comments` is on) |
+| `blocking` | `true` when implement must not start without it. Every `confidence: low` task has at least one blocking question |
+| `options` | Optional, questions only: two to eight short strings when the answer is a choice between known alternatives |
 
-Write a `question` for every `confidence: low` task (Step 4), and for any `confidence: medium` task where you put an open question to the client in the enriched description. If a Step 4 `update_task` description write fails (rate limit, quota), add an `owed-write` with `key: "dev-notes"` whose `text` is the description you meant to write, and set that task's question to `delivered: "none"`.
+Write questions as Step 4 describes. There is no `delivered` field any more: whether a question was sent is something the developer records in the report. An `owed-write` exists only when `config.provider_enrichment` is `true` and a description write failed (`key: "dev-notes"`, `text`: the description you meant to write).
 
 **`suggestions` — findings with no ticket yet.** If planning a task turns up a separate defect or follow-up that no fetched task covers, do not bury it in a plan file. Add one entry here. The `key` must be stable across runs. Write `[]` when there are none.
 
@@ -570,7 +601,7 @@ Field notes:
 - Update stale task statuses
 - Merge new tasks into the `tasks` map
 - Rebuild the `batches` map to reflect all current batches
-- `needs` travels with its task entry: untouched tasks keep theirs, re-triaged tasks get a fresh array that **reuses the same keys** (`question`, `dev-notes`)
+- `needs` travels with its task entry: untouched tasks keep theirs; a re-triaged task gets a fresh array in which every question that is still the same question keeps its `key`, `title`, `text` and `options` **exactly** (Step 4c), because recorded answers are matched on the key and compared on the wording
 - Rebuild `suggestions` from this run, reusing the key of any suggestion that is still valid
 - Always write `schema_version`, `dev_head` and `summary_file` for this run
 
@@ -617,12 +648,13 @@ Write a human-readable summary to:
 
 ## Duplicates (not batched)
 
-- <Task Title> (`<task-id>`) — duplicate of <canonical task title> (`<task-id>`); linked in the provider
+- <Task Title> (`<task-id>`) — duplicate of <canonical task title> (`<task-id>`)
 
-## Low Confidence Tasks (need clarification before implementing)
+## Questions for the client (answer them in the report)
 
-- <Task Title> (`<task-id>`) — <what's unclear>
-  - **Ask:** <the clarification question from Step 4, verbatim, ready to paste to the task creator>
+- <Task Title> (`<task-id>`, <batch-key>)
+  - **Ask <name>** (blocking): <question text from Step 4, verbatim, ready to paste>
+  - **Ask <name>** (does not block): <question text>
 
 ## Stats
 
@@ -637,8 +669,8 @@ Write a human-readable summary to:
 
 Summary notes:
 
-- The **Ask** line under each low-confidence task is mandatory when `config.provider_comments` is off — it is the only place the clarification question surfaces. When the flag is on, keep the line and append "(posted as a comment)".
-- In the Duplicates section, write "linked and commented in the provider" only when `config.provider_comments` is `true`; otherwise "linked in the provider".
+- Every question from Step 4 gets an **Ask** line, one line per question, never bundled. A batch with a blocking question cannot be implemented until that question is answered or dropped in the report: say so once, under the heading. When `config.provider_comments` is `true`, append "(posted as a comment)" to the lines that were.
+- In the Duplicates section, append "; linked in the provider" only when `config.provider_enrichment` is `true`, and "; commented" only when `config.provider_comments` is `true`.
 
 For the suggested branch name in each batch, use `config.branch_conventions` to determine the prefix:
 
@@ -700,6 +732,7 @@ When `/taskflow:triage --force` is run:
 | Summary file   | `<config.output_dir>/triage-<developer_slug>-<YYYY-MM-DD>.md`      |
 | Per-task plan  | `<config.output_dir>/tasks/<task-id>.md`                            |
 | Inbox ticks    | `<config.output_dir>/report-inbox.<developer_slug>.json` — written by `/taskflow:report`, never by triage |
+| Answers        | `<config.output_dir>/answers.json` — written by `/taskflow:report` only. Never read or edit it; ask `taskflow questions <task-id>` instead |
 
 All paths are relative to the project root. Use absolute paths when writing files.
 
@@ -711,7 +744,7 @@ All paths are relative to the project root. Use absolute paths when writing file
 
 - If `fetch_tasks` fails: stop and report the error. Do not proceed with stale cached data.
 - If `get_task` fails for an individual task: note the failure, skip that task, and continue with others. List skipped tasks in the terminal summary.
-- If `update_task` fails for a task: note the failure and continue. The plan file still gets written.
+- If `update_task` fails for a task (only reachable when `config.provider_enrichment` is `true`): note the failure, add the `owed-write` need, and continue. The plan file still gets written.
 - If `add_comment` fails (only reachable when `config.provider_comments` is `true`): note the failure and continue. Comments are not blocking.
 - If `download_attachment` fails or the URL expired: call it once more for a fresh URL. If it still fails, proceed without the attachment, classify with what remains, and record the failure in the `unclear` field.
 
@@ -737,11 +770,11 @@ Use this section when `config.provider` is `"clickup"`.
 | `fetch_tasks(list_id, status, assignee_id)` | `clickup_filter_tasks` | Pass `list_ids: [list_id]`, `statuses: [status]`, `assignees: [assignee_id]` |
 | `get_task(id)` | `clickup_get_task` | Pass `task_id: id` |
 | `get_comments(id)` | `clickup_get_task_comments` | Pass `task_id: id` |
-| `update_task(id, fields)` | `clickup_update_task` | Pass `task_id: id` + field overrides |
-| `add_comment(id, text)` | `clickup_create_comment` | Pass `task_id: id`, `comment_text: text`. **Gated — only callable when `config.provider_comments` is `true`. Off by default; see "Provider Comments" above** |
+| `update_task(id, fields)` | `clickup_update_task` | Pass `task_id: id` + field overrides. **A `description` field is gated — only when `config.provider_enrichment` is `true`. Off by default; see "Provider Writes" above** |
+| `add_comment(id, text)` | `clickup_create_comment` | Pass `task_id: id`, `comment_text: text`. **Gated — only callable when `config.provider_comments` is `true`. Off by default; see "Provider Writes" above** |
 | `find_member(name)` | `clickup_find_member_by_name` | Pass `name: name` |
 | `download_attachment(task_id, attachment_id)` | `clickup_download_task_attachment` | Get attachment IDs from `clickup_get_task` with `include: ["attachments"]`. Returns a short-lived (~5 min), possibly single-use download URL — curl it immediately, exactly once |
-| `link_tasks(id, other_id)` | `clickup_add_task_link` | Pass `task_id: id`, `links_to: other_id`. Bidirectional link, no blocking semantics |
+| `link_tasks(id, other_id)` | `clickup_add_task_link` | Pass `task_id: id`, `links_to: other_id`. Bidirectional link, no blocking semantics. **Gated — only when `config.provider_enrichment` is `true`. Off by default** |
 
 ### Status Mapping
 
