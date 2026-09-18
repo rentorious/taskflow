@@ -57,6 +57,22 @@ export async function listStateFiles(dir) {
  * Walk up from a cycle directory to the project that owns it: the directory
  * holding `.claude/taskflow-config.json` whose `output_dir` points back here.
  */
+const PROJECT_KEY = /^[a-z0-9][a-z0-9-]{1,38}$/;
+
+/** @returns {{url: string, project: string}|null} the `server` block of a project config, when it is usable */
+export function validServer(server) {
+  if (!server || typeof server !== 'object' || typeof server.url !== 'string' || !PROJECT_KEY.test(server.project ?? '')) return null;
+  try {
+    const url = new URL(server.url);
+    const loopback = url.protocol === 'http:' && (url.hostname === '127.0.0.1' || url.hostname === 'localhost');
+    // A token is sent on every call. It only ever travels encrypted, or to this machine.
+    if (url.protocol !== 'https:' && !loopback) return null;
+    return { url: url.origin, project: server.project };
+  } catch {
+    return null;
+  }
+}
+
 export function findProject(dir) {
   let current = resolve(dir);
   for (let depth = 0; depth < 12; depth++) {
@@ -65,13 +81,17 @@ export function findProject(dir) {
       try {
         const config = JSON.parse(readFileSync(configPath, 'utf8'));
         if (config.output_dir && resolve(current, config.output_dir) === resolve(dir)) {
+          const server = validServer(config.server);
           return {
             root: current,
+            server,
             config: {
               projectName: config.project_name ?? null,
               baseBranch: config.base_branch ?? null,
               providerComments: config.provider_comments === true,
               providerEnrichment: config.provider_enrichment === true,
+              // Where this project's answers live, when not here. Never pushed: the payload picks its four keys by name.
+              hostedUrl: server ? `${server.url}/` : null,
             },
           };
         }
@@ -83,7 +103,7 @@ export function findProject(dir) {
     if (parent === current) break;
     current = parent;
   }
-  return { root: null, config: null };
+  return { root: null, server: null, config: null };
 }
 
 export function createReader(dir, { slug = null, cycleId = 'live', isArchive = false, config = null } = {}) {

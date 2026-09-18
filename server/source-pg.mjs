@@ -60,7 +60,12 @@ export function createPgSource(db, { projectId, ownerId, readOnly = true }) {
       for (const found of rows) planText.set(found.sha256, found.body.toString('utf8'));
     }
 
-    return rawFromPayload(payload, { text: (hash) => (held.has(hash) ? planText.get(hash) : undefined), has: (hash) => held.has(hash), cycle });
+    const raw = rawFromPayload(payload, { text: (hash) => (held.has(hash) ? planText.get(hash) : undefined), has: (hash) => held.has(hash), cycle });
+    // A claim made here is the lock. What the laptop saw in batches/*.lock stays as a hint underneath it:
+    // a lock from before the project was hosted, or another session on that same machine.
+    const claims = await db.query('select batch_key, claimed_at from claim where cycle_id = $1 and project_id = $2 and released_at is null', [row.id, projectId]);
+    for (const claim of claims.rows) raw.locks[claim.batch_key] = { mtimeMs: new Date(claim.claimed_at).getTime() };
+    return raw;
   }
 
   return {

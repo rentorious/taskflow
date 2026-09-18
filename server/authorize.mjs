@@ -14,6 +14,7 @@ export const ACTIONS = Object.freeze({
   MANAGE_MEMBERS: 'project.members', // invite, change a role, remove
   CREATE_PROJECT: 'project.create',
   MANAGE_TOKENS: 'tokens.manage',    // one's own CLI tokens
+  SYNC_CYCLE: 'cycle.sync',          // push one's cycle, claim and release its batches, read their answers
 });
 
 const SEES_THE_BOARD = new Set(['admin', 'developer']);
@@ -44,6 +45,9 @@ export function createAuthorizer({ signInRequired }) {
         // In the browser, on your own cycle. A teammate's cycle is read-only, and a CLI token never
         // records what a person said: an answer must come from someone looking at the question.
         return actor.via === 'session' && SEES_THE_BOARD.has(actor.role) && context.ownsCycle === true;
+      case ACTIONS.SYNC_CYCLE:
+        // The CLI's token or a browser session alike: both are that developer, and the cycle is always their own.
+        return SEES_THE_BOARD.has(actor.role);
       case ACTIONS.MANAGE_MEMBERS:
         return actor.via === 'session' && (actor.role === 'admin' || actor.isInstanceAdmin === true);
       case ACTIONS.CREATE_PROJECT:

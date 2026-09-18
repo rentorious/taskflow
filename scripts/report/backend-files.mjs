@@ -28,6 +28,8 @@ export function createFileBackend({ dir, slug = null, project = null, enrich = n
 
   return {
     root,
+    /** Set when the project's answers live on a server: nothing is recorded locally then. */
+    hostedUrl: found.config?.hostedUrl ?? null,
 
     listCycles() {
       return listCycles(root);

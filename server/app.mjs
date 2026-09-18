@@ -21,6 +21,10 @@ import { createAccounts } from './accounts.mjs';
 import { createAuth, createRateLimiter, safeNext } from './auth.mjs';
 import { ACTIONS, createAuthorizer } from './authorize.mjs';
 import { createPgBackend } from './backend-pg.mjs';
+import { MAX_BLOB_BYTES, MAX_PAYLOAD_BYTES } from '../scripts/report/payload.mjs';
+import { importLocalHumanState } from './import-local.mjs';
+import { ingestCycle, putBlob } from './ingest.mjs';
+import { archiveCycle, claimBatch, cycleState, releaseBatch } from './sync.mjs';
 import { ACCOUNT_CSP, homePage, messagePage, notInvitedPage, settingsPage, signInPage } from './pages.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -29,6 +33,7 @@ const PROJECT_KEY = /^[a-z0-9][a-z0-9-]{1,38}$/;
 const LOGIN = /^[A-Za-z0-9][A-Za-z0-9-]{0,38}$/;
 const MOUNT = /^\/p\/([^/]+)\/u\/([^/]+)(\/.*)?$/;
 const FONT = /^\/assets\/fonts\/([a-z0-9-]+\.woff2)$/;
+const SYNC = /^\/api\/p\/([^/]+)\/(sync\/cycle|sync\/blob\/[0-9a-f]{64}|claim|release|archive|import|state)$/;
 const IDLE_MS = 10 * 60 * 1000;
 const MAX_FORM_BYTES = 8 * 1024;
 const HEALTHCHECK_HOST = 'healthcheck.railway.app'; // Railway's deploy check arrives under this name
@@ -138,6 +143,65 @@ export function createHostedApp({ db, publicUrl, version = 'dev', auth: authConf
       canCreateProject: authorize(actor, ACTIONS.CREATE_PROJECT),
       ...extra,
     });
+  }
+
+  // -- what the CLI talks to ---------------------------------------------------------------
+
+  async function readBytes(req, max) {
+    const chunks = [];
+    let size = 0;
+    for await (const chunk of req) {
+      size += chunk.length;
+      if (size > max) throw new HttpError(413, `Too large: ${max} bytes at most.`);
+      chunks.push(chunk);
+    }
+    return Buffer.concat(chunks);
+  }
+  async function readJson(req, max) {
+    if (!/^application\/json\b/i.test(req.headers['content-type'] ?? '')) throw new HttpError(415, 'Send application/json.');
+    try {
+      return JSON.parse((await readBytes(req, max)).toString('utf8'));
+    } catch (error) {
+      throw error.status ? error : new HttpError(400, 'Body is not valid JSON.');
+    }
+  }
+
+  /** /api/p/<project>/...: push, claim, release, state. Always about the asker's OWN cycle in that project. */
+  async function syncRoutes(req, res, match, actor) {
+    const [, projectKey, what] = match;
+    if (!actor) throw new HttpError(401, 'Sign in, or send a token.');
+    if (!PROJECT_KEY.test(projectKey)) throw notFound();
+    const role = await accounts.roleIn(projectKey, actor.id);
+    if (!role) throw notFound();
+    if (!authorize({ ...actor, role }, ACTIONS.SYNC_CYCLE)) throw new HttpError(403, 'Only a developer of this project has a cycle to push or claim from.');
+    // A token carries no ambient authority. A session cookie does, so a browser must show where it is calling from.
+    if (actor.via === 'session' && req.method !== 'GET' && !fromOurPages(req)) throw new HttpError(403, 'Cross-origin requests are not allowed.');
+    const who = { projectId: projectKey, userId: actor.id };
+
+    if (what === 'state' && req.method === 'GET') return sendJson(res, 200, await cycleState(db, who));
+    if (what === 'sync/cycle' && req.method === 'PUT') {
+      const result = await ingestCycle(db, { ...who, payload: await readJson(req, MAX_PAYLOAD_BYTES + 1024) });
+      await notify(projectKey);
+      return sendJson(res, 200, result);
+    }
+    if (what.startsWith('sync/blob/') && req.method === 'PUT') {
+      const result = await putBlob(db, { projectId: projectKey, sha256: what.slice('sync/blob/'.length), body: await readBytes(req, MAX_BLOB_BYTES) });
+      await notify(projectKey);
+      return sendJson(res, 200, result);
+    }
+    if (req.method !== 'POST') throw new HttpError(405, 'Method not allowed.');
+    const body = await readJson(req, 1024 * 1024);
+    let result;
+    if (what === 'claim') result = await claimBatch(db, { ...who, batchKey: body.batchKey ?? null, stack: body.stack === true, resume: body.resume === true, host: body.host ?? null });
+    else if (what === 'release') result = await releaseBatch(db, { ...who, batchKey: body.batchKey });
+    else if (what === 'archive') result = await archiveCycle(db, { ...who, cycleId: body.cycleId });
+    else if (what === 'import') {
+      const live = (await db.query('select id from cycle where project_id = $1 and user_id = $2 and is_live', [projectKey, actor.id])).rows[0];
+      if (!live) throw new HttpError(409, 'Push the cycle first.');
+      result = await importLocalHumanState(db, { ...who, cycleUuid: live.id, answersJson: body.answers ?? null, ticksJson: body.ticks ?? null });
+    } else throw notFound();
+    await notify(projectKey);
+    return sendJson(res, 200, result);
   }
 
   // -- routes that exist only with sign-in ------------------------------------------------
@@ -253,6 +317,8 @@ export function createHostedApp({ db, publicUrl, version = 'dev', auth: authConf
       const resolved = await auth.resolve(req, res);
       if (resolved.badToken) { badTokens.fail(address); throw new HttpError(401, 'That token is not valid. Create a new one in Settings.'); }
       actor = resolved.actor;
+      const sync = SYNC.exec(path);
+      if (sync) return syncRoutes(req, res, sync, actor);
       const handled = await accountRoutes(req, res, path, url, actor);
       if (handled !== false) return handled;
     } else {
@@ -309,17 +375,19 @@ export function createHostedApp({ db, publicUrl, version = 'dev', auth: authConf
     route(req, res).catch((error) => sendError(res, error));
   });
 
+  /** A write made in this process: tell the open pages without waiting for the poll. */
+  async function notify(projectId) {
+    for (const [key, slot] of mounted) if (key.startsWith(`${projectId}:`)) (await slot.ready).notify();
+  }
+
   return {
     server,
     accounts,
+    notify,
     listen: ({ host, port }) => new Promise((resolveListen, reject) => {
       server.once('error', reject);
       server.listen(port, host, () => { server.removeAllListeners('error'); resolveListen(server.address().port); });
     }),
-    /** A write made in this process (a push, once it arrives over HTTP): tell the open pages without waiting for the poll. */
-    async notify(projectId) {
-      for (const [key, slot] of mounted) if (key.startsWith(`${projectId}:`)) (await slot.ready).notify();
-    },
     async close() {
       clearInterval(sweeper);
       for (const slot of mounted.values()) (await slot.ready.catch(() => null))?.close();

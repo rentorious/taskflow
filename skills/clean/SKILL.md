@@ -79,6 +79,8 @@ Determine the **cycle date**: `last_triage` from the index. If several indexes d
 
 Run every check and collect the findings before changing anything.
 
+**Hosted projects, first.** If `.claude/taskflow-config.json` has a `server` block and this is not a `--dry-run`, tell the server the cycle is over **before** any file moves, because the cycle's id (`cycle.<developer_slug>.json`) is one of the files about to be archived: run `node <taskflow_cli> archive --dir <absolute path of config.output_dir>`, with `<taskflow_cli>` resolved as `${CLAUDE_PLUGIN_ROOT}/scripts/taskflow.mjs`, else `<skill base directory>/../../scripts/taskflow.mjs`. It exits 0 and says "not hosted" when there is no server. If it exits 4, say so and continue: the server also archives the old cycle by itself when the next triage pushes a new one. Recorded answers stay on the server with the project, exactly as `answers.json` stays on disk.
+
 1. **Claimed batches.** For each `batches/<batch-key>.lock/`: if `<batch-key>.json` has `status: "in-progress"`, another session may be implementing it right now. If any such batch exists and `--dry-run` was NOT passed, ask ONE question and wait:
 
    > "<batch-key> is claimed and in progress (branch `<branch>`). Archiving now will not stop that session, and its later writes will land in an empty directory. Continue? [y/N]"

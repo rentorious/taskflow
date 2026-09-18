@@ -17,9 +17,11 @@ export async function createApp({ dir, slug = null, project = null, version = 'd
 
   const allowedHosts = () => new Set([`127.0.0.1:${port}`, `localhost:${port}`, `[::1]:${port}`]);
 
+  const backend = createFileBackend({ dir: root, slug, project, enrich });
   const handler = await createReportHandler({
-    backend: createFileBackend({ dir: root, slug, project, enrich }),
+    backend,
     legacyStatus: true,
+    canWrite: () => !backend.hostedUrl,
     // A missing Origin is a same-origin GET-style client or a script on this machine; a present one must be ours.
     security: { originAllowed: (origin) => !origin || [...allowedHosts()].some((host) => origin === `http://${host}`) },
   });

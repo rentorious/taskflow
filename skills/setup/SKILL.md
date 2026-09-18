@@ -386,7 +386,8 @@ The setup wizard produces a config file matching this exact schema. All fields a
   "full_lint": "<full repo lint command or null>",
   "full_typecheck": "<full repo typecheck command or null>",
   "provider_comments": false,
-  "provider_enrichment": false
+  "provider_enrichment": false,
+  "server": { "url": "https://flow.example.com", "project": "my-project" }
 }
 ```
 
@@ -410,6 +411,8 @@ The setup wizard produces a config file matching this exact schema. All fields a
 | `provider_comments` | **Default `false`.** When `false` (or absent), triage and implement never post developer-voice comments back to the provider — the content is written to local plan/summary files instead. Set to `true` only to opt back in. Comment volume counts against provider storage/usage quotas (ClickUp free plan), which is why this ships off |
 
 | `provider_enrichment` | **Default `false`.** When `false` (or absent), triage never rewrites a task's description and never links tasks in the provider; what it learned goes into the local plan files. With both flags off, the only thing taskflow ever writes to the provider is a task's status |
+
+| `server` | **Optional; never written by the wizard.** `{ "url", "project" }` of a hosted taskflow dashboard the team runs. With it, `taskflow push` mirrors the cycle there, answers are typed into that dashboard (from a phone, too), and `taskflow claim` lets the server decide. No secret goes here: the token is stored by `node <plugin>/scripts/taskflow.mjs login <url>` in `~/.config/taskflow/credentials.json`. The URL must be `https://`, or `http://127.0.0.1` for development |
 
 **Always write `provider_comments: false` and `provider_enrichment: false` in a newly generated config.** Do not ask the user about them during the wizard — they are opt-in knobs, not setup decisions.
 

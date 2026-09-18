@@ -110,6 +110,9 @@ Follow these steps in order. Do not skip or reorder steps.
    | `6` | Nothing can be claimed | Print the output: it says what each batch waits on, including the questions to answer. Stop. |
    | `7` | Already complete, or gone stale | Print the output. Stop. |
    | `1` | Usage error (unknown batch, several developers and no `--dev-slug`) | Print the output. Stop. |
+   | `4` | Hosted projects only: the server could not be asked (no network, no token, a refused token) | Print the output: it says what to check. Stop. The server owns the answers and the claims, so **nothing may start without it**: do not fall back to reading local files, and do not create a `.lock` directory yourself. |
+
+   **Hosted projects.** When `.claude/taskflow-config.json` has a `server` block, the same `claim` command first mirrors the cycle to that server and then lets the server decide; the answers it writes to `answers/<task-id>.md` come from there. You run the same commands either way. The one extra duty is to keep the mirror current: **after every write to a batch file, run `node <taskflow_cli> push --dir <output_dir>`** (add `--dev-slug` when you use it elsewhere). That is after Step 1.12, Step 3.3, Step 4b, Step 4f and Step 7.4, and after marking a task or a batch stale. It prints "not hosted" and exits 0 when there is no server, so run it unconditionally. A failed push (exit 4) is worth one line to the developer and is **not** a reason to stop work that is already claimed: the next push repairs the mirror.
 
    On exit `0` the output names the claimed batch, its tasks, the claim record (`<output_dir>/batches/<batch-key>.lock/claim.json`) and the answer files to read. A batch that was in progress with no lock is re-locked and resumed without asking; the output says "Resumed".
 

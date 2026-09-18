@@ -221,6 +221,10 @@ export function buildModel(raw, { human = null, ticks = null, enrichment = null,
   const indexBatches = index.batches ?? {};
   const problems = [...(raw.problems ?? []), ...(ticks.problems ?? [])];
   const problem = (code, subject, message) => problems.push({ code, subject, message, since: null, usingLastGood: false });
+  // A hosted project's answers live on its server. This local page still shows the pipeline, but what is
+  // typed here would be read by nobody: implement asks the server.
+  const hostedElsewhere = Boolean(raw.config?.hostedUrl) && !raw.cycle?.hosted && !raw.cycle?.isArchive;
+  if (hostedElsewhere) problem('hosted-elsewhere', 'answers', `This project is hosted at ${raw.config.hostedUrl} Answers and ticks are recorded there, so this local page is read-only.`);
 
   const tasks = {};
   for (const [id, entry] of Object.entries(indexTasks)) {
@@ -488,7 +492,7 @@ export function buildModel(raw, { human = null, ticks = null, enrichment = null,
       id: raw.cycle?.id ?? 'live',
       isArchive: Boolean(raw.cycle?.isArchive),
       // An archive never changes. A hosted cycle can also be read-only for the person looking at it.
-      readOnly: Boolean(raw.cycle?.isArchive || raw.cycle?.readOnly),
+      readOnly: Boolean(raw.cycle?.isArchive || raw.cycle?.readOnly || hostedElsewhere),
       dir: raw.cycle?.dir ?? null,
       // Set by the hosted server: the cycle is a mirror of what a laptop last pushed.
       hosted: Boolean(raw.cycle?.hosted),

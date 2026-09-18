@@ -408,6 +408,9 @@ above, the amendment wins.
 | A11 | "CSRF Origin check reads `PUBLIC_URL`" | A write must carry the page's own `Origin`, or, when the browser withheld it, `Sec-Fetch-Site: same-origin` | Chromium sends `Origin: null` on a same-origin form post under `Referrer-Policy: no-referrer`. Fetch metadata is set by the browser and cannot be forged by page script. Found in a real browser, not by the HTTP tests |
 | A12 | D17, D21: the answerer | The role, invites for it and the proposal rule in the store exist. The answerer's view and the accept action stay in Phase 2, as the phase list above already says. Until then an answerer who signs in is told so | Nothing in Phase 1 can create a proposal |
 | A13 | D17: who writes where | You write on your own cycle, in a browser. A teammate's cycle is read-only ("cycle switcher … a teammate's, read-only"). A CLI token reads, and will push and claim; it never records an answer | An answer must come from a person looking at the question |
+| A15 | Push, claim: `PUT /api/sync/cycle`, `POST /api/claim`, … | The same routes under `/api/p/<project>/…` (`sync/cycle`, `sync/blob/<sha>`, `claim`, `release`, `archive`, `import`, `state`), always about the asker's own cycle | The project is in the path, so one check resolves the asker's role before anything else runs |
+| A16 | "locks comes from the claim table" | Claims win; the lock directories the laptop saw stay underneath as a hint | A lock from before the project was hosted, or another session on the same machine, is still real. `release` pushes again so a removed lock disappears at once |
+| A17 | `GET /api/answers`, `GET /api/questions` | One `GET …/state` returns the model and this developer's records; the CLI renders `answers/<task>.md`, `questions` and `status` from it with the code it already had | One rendering path, hosted or not |
 | A14 | D10: instance admins | They create projects and become admin of what they create. Being an instance admin opens no project they were not added to | Ticket text is confidential per project |
 
 ### Phase 1 as sliced
@@ -423,4 +426,4 @@ above, the amendment wins.
 
 Without sign-in configured the server starts only when `PUBLIC_URL` is a loopback origin, read-only.
 The rule is "no authentication configured, so require loopback"; setting the four sign-in variables
-lifts it (1b, done). 1a and 1b are built; see `server/`.
+lifts it (1b, done). 1a, 1b and 1c are built (plugin 1.6.0); see `server/` and `scripts/report/remote.mjs`.

@@ -682,7 +682,9 @@ For the suggested branch name in each batch, use `config.branch_conventions` to 
 
 ### Step 9: Print Terminal Summary
 
-After writing files, print the summary content directly to the terminal so the developer can review it without opening files.
+After writing files, mirror the cycle to the project's server, if it has one. Resolve `<taskflow_cli>` as in Step 4c and run `node <taskflow_cli> push --dir <absolute path of config.output_dir>` (add `--dev-slug <developer_slug>` when several developers share the directory). It prints "not hosted" and exits 0 when the config has no `server` block, so run it unconditionally. If it exits 4, say so in one line (the output names what to check) and carry on: the files on disk are the triage's result, and the next push repairs the mirror. This sends the index, plans and screenshots to the team's own server. It writes nothing to the task provider.
+
+Then print the summary content directly to the terminal so the developer can review it without opening files.
 
 Then print the file locations:
 

@@ -9,6 +9,9 @@ Start the report: a local page that groups the cycle by what happens next — wh
 
 The report only reads pipeline state. It writes two files of its own, both about what the developer did, never about the pipeline: `<output_dir>/report-inbox.<slug>.json`, which inbox items were ticked off (per cycle, archived with it), and `<output_dir>/answers.json`, the answers to questions (per project; it outlives `/taskflow:clean`). Nothing else may write `answers.json`. Never edit it by hand or on the developer's behalf: an answer is recorded by typing it into the page.
 
+
+> **Hosted projects.** If `.claude/taskflow-config.json` has a `server` block, the team's dashboard lives at `<server.url>/p/<server.project>/`: print that address first, and say that answers are recorded there. The local report below still works and still shows the pipeline, but it is read-only for such a project and says so in a banner.
+
 ## Invocation
 
 ```
