@@ -1,6 +1,6 @@
 # Hosted dashboard with answers and an implement gate — design
 
-Status: Phase 0 implemented in 1.5.0 (2026-09-18); Phases 1–3 proposed. Builds on `2026-09-17-report-rework-design.md` (1.4.0).
+Status: Phase 0 implemented in 1.5.0 (2026-09-18); Phase 1 in progress, see "Amendments"; Phases 2–3 proposed. Builds on `2026-09-17-report-rework-design.md` (1.4.0).
 
 ## Goal
 
@@ -50,7 +50,7 @@ Status: Phase 0 implemented in 1.5.0 (2026-09-18); Phases 1–3 proposed. Builds
 | D11 | CLI auth | Bearer token per user, created in the dashboard, stored hashed. On the laptop: `~/.config/taskflow/credentials.json`, mode 0600, keyed by server URL. The server takes the user from the token, never from a slug in the request body | Never in the repository, never in the project config. Every write is attributable |
 | D12 | Storage | Railway Postgres only. Snapshot as `jsonb`, plan files as text rows, attachments as content-addressed `bytea` (sha256), 10 MB cap per file | One stateful thing to back up; the app service stays stateless. 11 MB per cycle today. A Railway volume would add: one volume per service, no replicas, downtime on redeploy |
 | D13 | Code layout | Same repository. Root `package.json` (`start: node server/main.mjs`, single dependency `pg`) and `railway.json` with healthcheck `/api/health`. Everything under `scripts/` stays zero-dependency | F8. The plugin still installs by git clone; Claude Code ignores `package.json` |
-| D14 | Local mode | Kept. File adapters stay as the test and offline-viewer backends. `/taskflow:report` prints the hosted URL when `server_url` is configured | The 63 tests run on file fixtures. The answer UI is written once against the store interface |
+| D14 | Local mode | Kept. File adapters stay as the test and offline-viewer backends. `/taskflow:report` prints the hosted URL when `server_url` is configured | The tests run on file fixtures. The answer UI is written once against the store interface |
 | D15 | Tenancy | **One deployment = one team.** Many users and many projects inside it; not a shared SaaS | Ticket text is client-confidential. Isolation between unrelated tenants is the most expensive security property to get right and keep right; a Railway template makes a private instance one click. Inside an instance, isolation is per project through membership |
 | D17 | Roles, per project | `admin` (members, settings), `developer` (own cycle, CLI token, claim, answer, drop), `answerer` (sees questions with their task title and summary, answers them; no plans, no lanes, no token) | Colleagues who hold the answers can type them in directly. One `authorize(user, project, action)` function guards every data route; every query carries `project_id` |
 | D18 | What is per user, what is per project | Per user: cycle (`project` + `user`), claims, tokens, sessions. Per project: answers and question state, keyed `(project, task_id, key)` | Two developers triage different tasks, so their cycles and claims never collide. An answer follows its task when the task is reassigned |
@@ -385,9 +385,36 @@ valid batch key is rejected by the runner.
 - D4/D5 no force flag; implement fails closed when the server is unreachable.
 - Phone-first UI.
 
-## Open decisions for the developer
+- D1 split ownership, D15 one deployment per team, D21 an answerer's answer needs a developer's
+  acceptance, D23 tier order (MCP before the Start button). All four confirmed.
 
-1. D1 split ownership — explained, not yet confirmed.
-2. D15 one deployment per team, versus a shared service.
-3. D21 an answerer's answer needs a developer's acceptance.
-4. D23 tier order, and whether Tier 2 is worth a spike at all.
+## Amendments (2026-09-18, while planning Phase 1)
+
+Checked against the code and the vendors' documentation. Where an amendment contradicts the text
+above, the amendment wins.
+
+| # | Above | Amended to | Why |
+|---|---|---|---|
+| A1 | D13: root `package.json`; "Claude Code ignores `package.json`" | `server/package.json` and `server/package-lock.json`, nested. The plugin root holds no manifest. Deploys build from a root `Dockerfile` | Claude Code runs `npm ci --ignore-scripts` for any plugin whose root holds a `package.json` and a lockfile, and that cannot be turned off. A nested manifest keeps plugin installs inert. Railpack needs a root manifest to detect Node, hence the Dockerfile |
+| A2 | D13 and "Railway": `railway.json` | No `railway.json`. Dockerfile, service settings and the template carry the configuration | Railway deprecated Config as Code; the files stop being read on 2026-12-01 |
+| A3 | D10: OAuth scope `read:user` | No scope | A token with no scope already returns `id`, `login`, `name` and `avatar_url`. Sign-in uses `state` and PKCE (S256) |
+| A4 | "Cycle identity … falls back to `last_triage`" | `<output_dir>/cycle.<slug>.json`, `{cycle_id, created_at}`, created once by the CLI with an exclusive create. No fallback | `last_triage` is a date, is rewritten on re-triage and is not unique. `/taskflow:clean` archives unknown top-level files, so the id travels with its cycle. A new live id for the same project and user archives the previous live cycle in the same transaction |
+| A5 | Database: global `blob`; `plan_file`; `attachment`; `snapshot jsonb`; no tick table | `blob` keyed `(project_id, sha256)`. One `cycle_blob(cycle_id, project_id, sha256)` reference table replaces `plan_file` and `attachment`; names, sizes and modification times stay in the snapshot's manifest. `snapshot json`. New `inbox_tick(project_id, cycle_id, item_id, …)`. `question_state` gains `text`; `answer` gains `question_title` and `public_id` | A global content-addressed store lets a member of one project name another project's hash in a manifest and read that file, and "which hashes are missing" is an existence oracle. `jsonb` reorders object keys and the view model iterates in insertion order. `POST /api/inbox` needs somewhere to write. The client compares answer ids as strings |
+| A6 | F6: "the server swaps two adapters" | The reusable unit is a report handler over a backend object (`handler.mjs`, `backend-files.mjs`) | `server.mjs` also reads disk for the cycle list, the cache signature, the summary, attachments and the watcher, and owns the loopback-only security checks |
+| A7 | D21 | An unaccepted answer never stamps `question_state`; accepting it does. "Newest answer" means newest accepted | A question's state is derived from the recorded resolution alone, so a stamped but hidden answer would open the gate |
+| A8 | One-time import (not covered above) | First wins per question: a question that already has a row on the server is skipped and listed; the rest is imported; re-running is a no-op. The live cycle's tick file is imported too | Never merges within a question, and does not strand a second developer's local answers |
+| A9 | D14: "The 63 tests" | 134 at the start of Phase 1 | — |
+
+### Phase 1 as sliced
+
+1. **1a** — handler and backend seam; `server/` with `pg`, migrations, Postgres source and HumanStore,
+   payload and ingest; a hosted app that binds loopback only and refuses every write; a seed tool.
+2. **1b** — GitHub sign-in, sessions, users, projects, memberships, invites, `authorize()`, CLI tokens;
+   HTTP writes turn on; the answerer role.
+3. **1c** — push and server-side claim in the CLI; the one-time import; skill edits.
+4. **1d** — deploy one instance to Railway.
+5. **1e** — the phone layout.
+6. **1f** — Railway template, continuous integration, documentation for other teams.
+
+With no sign-in yet, 1a's server starts only when `PUBLIC_URL` is a loopback origin. The rule is
+"no authentication configured, so require loopback", which 1b lifts by configuring authentication.
