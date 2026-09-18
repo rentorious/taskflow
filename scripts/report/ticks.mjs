@@ -1,9 +1,10 @@
 // Persistence for inbox ticks: `report-inbox.<slug>.json` in the cycle directory.
 //
-// This is the only file the report ever writes. It is deliberately separate from
-// state.*.json and batches/*.json, which belong to triage and implement, so the
-// report can never race an implement session. It is not a dotfile, so
-// /taskflow:clean archives it together with the cycle it describes.
+// Holds every kind of tick except questions, which live in answers.json and
+// outlive the cycle (see human.mjs). Deliberately separate from state.*.json and
+// batches/*.json, which belong to triage and implement, so the report can never
+// race an implement session. It is not a dotfile, so /taskflow:clean archives
+// it together with the cycle it describes.
 
 import { readFile, rename, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';

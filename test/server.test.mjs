@@ -133,43 +133,150 @@ describe('attachments', () => {
 });
 
 describe('inbox ticks', () => {
-  const ID = 'question:hb108:question';
+  const ID = 'verify-close:hb121:fixed';
   let item;
 
   before(async () => {
     item = (await (await fetch(`${base}/api/model`)).json()).inbox[ID];
   });
 
-  test('sent parks the question as waiting, and it persists to disk', async () => {
-    const res = await tick({ id: ID, resolution: 'sent', fingerprint: item.fingerprint, note: 'asked in chat' });
+  test('verified parks the item as waiting, and it persists to the cycle', async () => {
+    const res = await tick({ id: ID, resolution: 'verified', fingerprint: item.fingerprint, note: 'checked on staging' });
     assert.equal(res.status, 200);
     assert.equal((await res.json()).item.state, 'waiting');
     const file = JSON.parse(await readFile(join(dir, 'report-inbox.sam.json'), 'utf8'));
-    assert.equal(file.items[ID].resolution, 'sent');
-    assert.equal(file.items[ID].note, 'asked in chat');
+    assert.equal(file.items[ID].resolution, 'verified');
+    assert.equal(file.items[ID].note, 'checked on staging');
     assert.equal(file.cycle, '2026-01-14');
   });
 
-  test('answered finishes it; null unticks it', async () => {
-    assert.equal((await (await tick({ id: ID, resolution: 'answered', fingerprint: item.fingerprint })).json()).item.state, 'handled');
+  test('closed finishes it; null unticks it', async () => {
+    assert.equal((await (await tick({ id: ID, resolution: 'closed', fingerprint: item.fingerprint })).json()).item.state, 'handled');
     assert.equal((await (await tick({ id: ID, resolution: null })).json()).item.state, 'open');
   });
 
   test('rejections', async () => {
-    assert.equal((await tick({ id: ID, resolution: 'sent', fingerprint: 'wrong' })).status, 409, 'stale fingerprint');
-    assert.equal((await tick({ id: ID, resolution: 'closed', fingerprint: item.fingerprint })).status, 400, 'wrong resolution for the kind');
+    assert.equal((await tick({ id: ID, resolution: 'verified', fingerprint: 'wrong' })).status, 409, 'stale fingerprint');
+    assert.equal((await tick({ id: ID, resolution: 'sent', fingerprint: item.fingerprint })).status, 400, 'wrong resolution for the kind');
     assert.equal((await tick({ id: 'question:nope:question', resolution: 'sent' })).status, 404);
     assert.equal((await tick({ id: 'stale-lock:batch-9:lock', resolution: 'done' })).status, 400, 'derived items are not tickable');
-    assert.equal((await tick({ id: ID, resolution: 'sent', fingerprint: item.fingerprint }, { 'Content-Type': 'text/plain' })).status, 415);
-    assert.equal((await tick({ id: ID, resolution: 'sent', fingerprint: item.fingerprint }, { 'Content-Type': 'application/json', Origin: 'https://evil.example.com' })).status, 403);
-    assert.equal((await tick({ id: ID, resolution: 'sent', fingerprint: item.fingerprint }, undefined, '?cycle=2025-12-01')).status, 403, 'archives are read-only');
+    assert.equal((await tick({ id: ID, resolution: 'verified', fingerprint: item.fingerprint }, { 'Content-Type': 'text/plain' })).status, 415);
+    assert.equal((await tick({ id: ID, resolution: 'verified', fingerprint: item.fingerprint }, { 'Content-Type': 'application/json', Origin: 'https://evil.example.com' })).status, 403);
+    assert.equal((await tick({ id: ID, resolution: 'verified', fingerprint: item.fingerprint }, undefined, '?cycle=2025-12-01')).status, 403, 'archives are read-only');
   });
 
   test('pipeline state files are never written', async () => {
     const before = await readFile(join(dir, 'state.sam.json'), 'utf8');
-    await tick({ id: ID, resolution: 'sent', fingerprint: item.fingerprint });
+    await tick({ id: ID, resolution: 'verified', fingerprint: item.fingerprint });
     assert.equal(await readFile(join(dir, 'state.sam.json'), 'utf8'), before);
   });
+});
+
+describe('answers', () => {
+  const ID = 'question:hb108:question';
+  const JSON_HEADERS = { 'Content-Type': 'application/json' };
+  const post = (path, body, headers = JSON_HEADERS, query = '') => fetch(`${base}${path}${query}`, { method: 'POST', headers, body: JSON.stringify(body) });
+  const answer = (body, headers, query) => post('/api/answer', body, headers, query);
+  const stored = async () => JSON.parse(await readFile(join(dir, 'answers.json'), 'utf8')).items[ID];
+  let item;
+
+  before(async () => {
+    item = (await (await fetch(`${base}/api/model`)).json()).inbox[ID];
+  });
+
+  test('an open blocking question holds its batch', async () => {
+    assert.deepEqual([item.state, item.blocking, item.resolutions], ['open', true, ['sent', 'dropped']]);
+    assert.equal((await (await fetch(`${base}/api/model`)).json()).batches['batch-6'].laneReason, 'waiting-on-answers');
+  });
+
+  test('a tick cannot answer a question', async () => {
+    const res = await tick({ id: ID, resolution: 'answered', fingerprint: item.fingerprint });
+    assert.equal(res.status, 400);
+    assert.match((await res.json()).error, /saving an answer/);
+  });
+
+  test('sent is recorded with the answers, not in the cycle file', async () => {
+    assert.equal((await (await tick({ id: ID, resolution: 'sent', fingerprint: item.fingerprint })).json()).item.state, 'waiting');
+    assert.equal((await stored()).resolution, 'sent');
+    const cycleFile = JSON.parse(await readFile(join(dir, 'report-inbox.sam.json'), 'utf8'));
+    assert.equal(cycleFile.items[ID], undefined);
+  });
+
+  test('saving an answer settles it and frees the batch', async () => {
+    const res = await answer({ id: ID, fingerprint: item.fingerprint, body: 'Orders **1042** and 1051, both with a pre-order.', source: 'Mara, by phone', idempotencyKey: 'draft-1', previousAnswerId: null });
+    assert.equal(res.status, 200);
+    const saved = (await res.json()).item;
+    assert.equal(saved.state, 'handled');
+    assert.match(saved.answer.bodyHtml, /<strong>1042<\/strong>/);
+    assert.equal(saved.answer.source, 'Mara, by phone');
+    const model = await (await fetch(`${base}/api/model`)).json();
+    assert.equal(model.batches['batch-6'].lane, 'ready');
+    assert.equal((await stored()).answers[0].questionText, item.text);
+  });
+
+  test('a double submit is one answer', async () => {
+    const again = await answer({ id: ID, fingerprint: item.fingerprint, body: 'Orders **1042** and 1051, both with a pre-order.', idempotencyKey: 'draft-1', previousAnswerId: null });
+    assert.equal(again.status, 200);
+    assert.equal((await stored()).answers.length, 1);
+  });
+
+  test('a second tab that has not seen the first answer is refused', async () => {
+    const res = await answer({ id: ID, fingerprint: item.fingerprint, body: 'Something else.', idempotencyKey: 'draft-2', previousAnswerId: null });
+    assert.equal(res.status, 409);
+    assert.equal((await stored()).answers.length, 1);
+  });
+
+  test('markup in an answer is shown as text', async () => {
+    const seen = (await stored()).answers.at(-1).id;
+    const res = await answer({ id: ID, fingerprint: item.fingerprint, body: '<img src=x onerror=alert(1)> and [x](javascript:alert(1))', idempotencyKey: 'draft-3', previousAnswerId: seen });
+    const html = (await res.json()).item.answer.bodyHtml;
+    assert.ok(!/<img|href="javascript/i.test(html), html);
+  });
+
+  test('a drop needs a reason; reopening keeps the history', async () => {
+    assert.equal((await tick({ id: ID, resolution: 'dropped', fingerprint: item.fingerprint })).status, 400);
+    assert.equal((await (await tick({ id: ID, resolution: 'dropped', fingerprint: item.fingerprint, note: 'Mara says it no longer happens.' })).json()).item.state, 'handled');
+    const reopened = (await (await tick({ id: ID, resolution: null })).json()).item;
+    assert.deepEqual([reopened.state, reopened.answer, reopened.answers.length], ['open', null, 2]);
+  });
+
+  test('rejections', async () => {
+    assert.equal((await answer({ id: ID, fingerprint: 'wrong', body: 'x' })).status, 409, 'stale fingerprint');
+    assert.equal((await answer({ id: ID, fingerprint: item.fingerprint, body: '   ' })).status, 400, 'empty');
+    assert.equal((await answer({ id: ID, fingerprint: item.fingerprint, body: 'y'.repeat(8001) })).status, 413, 'oversize is refused, not cut');
+    assert.equal((await answer({ id: 'verify-close:hb121:fixed', fingerprint: 'x', body: 'x' })).status, 400, 'only questions take answers');
+    assert.equal((await answer({ id: 'question:nope:question', body: 'x' })).status, 404);
+    assert.equal((await answer({ id: ID, fingerprint: item.fingerprint, body: 'x' }, { 'Content-Type': 'text/plain' })).status, 415);
+    assert.equal((await answer({ id: ID, fingerprint: item.fingerprint, body: 'x' }, { ...JSON_HEADERS, Origin: 'https://evil.example.com' })).status, 403);
+    assert.equal((await answer({ id: ID, fingerprint: item.fingerprint, body: 'x' }, JSON_HEADERS, '?cycle=2025-12-01')).status, 403, 'archives are read-only');
+    assert.equal((await post('/api/answer/confirm', { id: ID, fingerprint: item.fingerprint })).status, 400, 'nothing changed, nothing to confirm');
+  });
+
+  test('neither the index nor the cycle tick file is touched by an answer', async () => {
+    const before = await readFile(join(dir, 'state.sam.json'), 'utf8');
+    await answer({ id: ID, fingerprint: item.fingerprint, body: 'Final word.', idempotencyKey: 'draft-4' });
+    assert.equal(await readFile(join(dir, 'state.sam.json'), 'utf8'), before);
+  });
+});
+
+test('confirming a reworded question keeps its answer and frees the batch', async () => {
+  const qDir = await materializeTemp(specs.questions);
+  const qApp = await createApp({ dir: qDir, version: 'test' });
+  const qBase = `http://127.0.0.1:${await qApp.listen(0)}`;
+  const ID = 'question:qs106:q-author-order';
+  try {
+    const before = await (await fetch(`${qBase}/api/model`)).json();
+    assert.deepEqual([before.inbox[ID].state, before.batches['batch-6'].laneReason], ['changed', 'waiting-on-answers']);
+
+    const res = await fetch(`${qBase}/api/answer/confirm`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: ID, fingerprint: before.inbox[ID].fingerprint }) });
+    assert.equal(res.status, 200);
+    const item = (await res.json()).item;
+    assert.deepEqual([item.state, item.answer.body], ['handled', 'Newest first.']);
+    assert.equal((await (await fetch(`${qBase}/api/model`)).json()).batches['batch-6'].lane, 'ready');
+  } finally {
+    await qApp.close();
+    await rm(qDir, { recursive: true, force: true });
+  }
 });
 
 test('live updates announce a new version when a batch is claimed', async () => {

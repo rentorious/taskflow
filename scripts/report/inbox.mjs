@@ -14,7 +14,8 @@ import { renderMarkdown } from './markdown.mjs';
 
 /** Allowed tick resolutions per item kind, in the order a human walks them. */
 export const RESOLUTIONS = {
-  question: ['sent', 'answered', 'dropped'],
+  // No "answered" here: a question is answered by saving an answer, never by a tick.
+  question: ['sent', 'dropped'],
   'owed-write': ['done'],
   todo: ['done'],
   'verify-close': ['verified', 'closed'],

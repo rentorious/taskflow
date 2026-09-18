@@ -1,5 +1,6 @@
-// HTTP layer for the report. Read-only over pipeline state; the single write
-// route ticks inbox items into report-inbox.<slug>.json.
+// HTTP layer for the report. Read-only over pipeline state. The write routes
+// record what the developer did: inbox ticks (report-inbox.<slug>.json, per
+// cycle) and answers to questions (answers.json, per project).
 //
 // The page shows client ticket text, so the server is closed by default:
 // loopback only, Host allowlist (DNS rebinding), strict CSP, and an Origin +
@@ -10,10 +11,11 @@ import { createReadStream } from 'node:fs';
 import { readFile, readdir, realpath, stat } from 'node:fs/promises';
 import { dirname, extname, join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { buildModel, buildTaskDetail } from './model.mjs';
+import { ANSWERS_FILE } from './answers.mjs';
+import { openCycle } from './cycle.mjs';
+import { buildTaskDetail } from './model.mjs';
 import { renderMarkdown } from './markdown.mjs';
-import { attachmentType, createReader, findProject, listCycles } from './read.mjs';
-import { createTickStore } from './ticks.mjs';
+import { attachmentType, findProject, listCycles } from './read.mjs';
 import { computeSignature, createWatcher } from './watch.mjs';
 
 const UI_DIR = join(dirname(fileURLToPath(import.meta.url)), 'ui');
@@ -78,8 +80,7 @@ export async function createApp({ dir, slug = null, project = null, version = 'd
     if (!cycles.has(entry.id)) {
       cycles.set(entry.id, {
         ...entry,
-        reader: createReader(entry.dir, { slug: entry.isArchive ? null : slug, cycleId: entry.id, isArchive: entry.isArchive, config: found.config }),
-        ticks: null,
+        source: openCycle({ root, dir: entry.dir, slug, cycleId: entry.id, isArchive: entry.isArchive, config: found.config }),
         cache: null,
         building: null,
       });
@@ -90,18 +91,16 @@ export async function createApp({ dir, slug = null, project = null, version = 'd
   async function getState(id, { force = false } = {}) {
     const cycle = await getCycle(id);
     if (cycle.building) return cycle.building;
-    const signature = await computeSignature(cycle.dir);
+    // Answers live beside the cycles, not inside one, so an archive's own signature never sees them change.
+    const answersFile = await stat(join(root, ANSWERS_FILE)).catch(() => null);
+    const signature = `${await computeSignature(cycle.dir)}|${answersFile ? `${answersFile.mtimeMs}:${answersFile.size}` : 'none'}`;
     const enrichVersion = enrich?.version() ?? 0;
     const fresh = cycle.cache && cycle.cache.signature === signature && cycle.cache.enrichVersion === enrichVersion &&
       Date.now() - cycle.cache.builtAt < REBUILD_EVERY_MS;
     if (fresh && !force) return cycle.cache;
 
     cycle.building = (async () => {
-      const raw = await cycle.reader.read();
-      cycle.ticks ??= createTickStore(cycle.dir, raw.cycle.slug, { readOnly: cycle.isArchive });
-      const ticks = await cycle.ticks.load(raw.index?.last_triage ?? null);
-      const enrichment = enrich ? enrich.snapshot(raw, projectRoot) : null;
-      const model = buildModel(raw, { ticks, enrichment });
+      const { raw, model } = await cycle.source.build({ enrichment: enrich ? (read) => enrich.snapshot(read, projectRoot) : null });
       cycle.cache = { signature, enrichVersion, builtAt: Date.now(), raw, model };
       return cycle.cache;
     })().finally(() => { cycle.building = null; });
@@ -175,7 +174,8 @@ export async function createApp({ dir, slug = null, project = null, version = 'd
 
   const allowedHosts = () => new Set([`127.0.0.1:${port}`, `localhost:${port}`, `[::1]:${port}`]);
 
-  async function handleInbox(req, res, cycleId) {
+  /** Every write route: JSON only, same origin only (CSRF), never on an archive. Returns the item it is about. */
+  async function openWrite(req, cycleId) {
     if (!/^application\/json\b/i.test(req.headers['content-type'] ?? '')) throw new HttpError(415, 'Send application/json.');
     const origin = req.headers.origin;
     if (origin && ![...allowedHosts()].some((host) => origin === `http://${host}`)) throw new HttpError(403, 'Cross-origin writes are not allowed.');
@@ -187,15 +187,53 @@ export async function createApp({ dir, slug = null, project = null, version = 'd
     const item = model.inbox[body?.id];
     if (!item) throw new HttpError(404, 'That item is no longer in the inbox.');
     if (!item.tickable) throw new HttpError(400, 'This item clears itself once the underlying state is fixed.');
+    return { cycle, body, model, item };
+  }
 
-    const resolution = body.resolution ?? null;
-    if (resolution !== null && !item.resolutions.includes(resolution)) throw new HttpError(400, `Use one of: ${item.resolutions.join(', ')}.`);
-    if (resolution !== null && body.fingerprint !== item.fingerprint) throw new HttpError(409, 'The item changed since you loaded it. Reload and try again.');
-
-    await cycle.ticks.set(item.id, resolution === null ? null : { resolution, fingerprint: item.fingerprint, title: item.title, note: body.note }, model.cycle.lastTriage);
+  async function sendItem(res, cycleId, id) {
     const next = await getState(cycleId, { force: true });
     broadcast(next.model.version);
-    sendJson(res, 200, { ok: true, version: next.model.version, item: next.model.inbox[item.id] ?? null });
+    sendJson(res, 200, { ok: true, version: next.model.version, item: next.model.inbox[id] ?? null });
+  }
+
+  const stale = (body, item) => body.fingerprint !== item.fingerprint;
+  const CHANGED = 'The item changed since you loaded it. Reload and try again.';
+
+  async function handleInbox(req, res, cycleId) {
+    const { cycle, body, model, item } = await openWrite(req, cycleId);
+    const resolution = body.resolution ?? null;
+    if (resolution !== null && !item.resolutions.includes(resolution)) {
+      throw new HttpError(400, item.kind === 'question' && resolution === 'answered' ? 'A question is answered by saving an answer.' : `Use one of: ${item.resolutions.join(', ')}.`);
+    }
+    if (resolution !== null && stale(body, item)) throw new HttpError(409, CHANGED);
+
+    await cycle.source.human.setResolution(item, { resolution, note: body.note }, model.cycle.lastTriage);
+    await sendItem(res, cycleId, item.id);
+  }
+
+  async function handleAnswer(req, res, cycleId) {
+    const { cycle, body, item } = await openWrite(req, cycleId);
+    if (item.kind !== 'question') throw new HttpError(400, 'Only questions take answers.');
+    if (stale(body, item)) throw new HttpError(409, CHANGED);
+    await cycle.source.human.addAnswer(item, {
+      body: body.body,
+      source: body.source,
+      idempotencyKey: typeof body.idempotencyKey === 'string' ? body.idempotencyKey : null,
+      // Absent means "do not check"; null means "I had seen no answer yet".
+      previousAnswerId: 'previousAnswerId' in body ? body.previousAnswerId : undefined,
+      via: 'web',
+    });
+    await sendItem(res, cycleId, item.id);
+  }
+
+  /** The question was reworded and what is recorded on it still applies. */
+  async function handleConfirm(req, res, cycleId) {
+    const { cycle, body, item } = await openWrite(req, cycleId);
+    if (item.kind !== 'question') throw new HttpError(400, 'Only questions can be confirmed.');
+    if (item.state !== 'changed') throw new HttpError(400, 'This question has not changed since it was settled.');
+    if (stale(body, item)) throw new HttpError(409, CHANGED);
+    await cycle.source.human.confirm(item);
+    await sendItem(res, cycleId, item.id);
   }
 
   // -- live updates ------------------------------------------------------------
@@ -245,6 +283,8 @@ export async function createApp({ dir, slug = null, project = null, version = 'd
     const cycleId = url.searchParams.get('cycle') || 'live';
 
     if (req.method === 'POST' && path === '/api/inbox') return handleInbox(req, res, cycleId);
+    if (req.method === 'POST' && path === '/api/answer') return handleAnswer(req, res, cycleId);
+    if (req.method === 'POST' && path === '/api/answer/confirm') return handleConfirm(req, res, cycleId);
     if (req.method !== 'GET' && req.method !== 'HEAD') throw new HttpError(405, 'Method not allowed.');
 
     if (staticMap.has(path)) return sendStatic(res, staticMap.get(path));
@@ -295,7 +335,8 @@ export async function createApp({ dir, slug = null, project = null, version = 'd
 
   const server = createServer((req, res) => {
     route(req, res).catch((error) => {
-      const status = error instanceof HttpError ? error.status : 500;
+      // Stores reject with a plain Error carrying a 4xx status; anything else is ours to hide.
+      const status = error instanceof HttpError || (Number.isInteger(error?.status) && error.status >= 400 && error.status < 500) ? error.status : 500;
       if (status === 500) console.error(error);
       if (res.headersSent) return res.end();
       sendJson(res, status, { error: status === 500 ? 'The report hit an internal error. See the server log.' : error.message });
