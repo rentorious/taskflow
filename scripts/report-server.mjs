@@ -83,7 +83,7 @@ if (option('--snapshot')) {
   const { writeSnapshot } = await import('./report/snapshot.mjs');
   const out = await writeSnapshot(app, { cycle: option('--cycle', 'live'), outFile: resolve(option('--snapshot')) });
   console.log(`Snapshot written to ${out.path}`);
-  if (out.outsideCycle) console.error('Warning: the snapshot embeds ticket text and sits outside the taskflow output directory. Screenshots will not load from there.');
+  if (out.outsideCycle) console.error('Warning: the snapshot embeds ticket text and recorded answers, and sits outside the taskflow output directory. Screenshots will not load from there.');
   await app.close();
   process.exit(0);
 }

@@ -23,6 +23,10 @@ const state = {
   sections: new Map(), // `${taskId}:${slug}` -> open? (only what the user toggled)
   changed: new Set(),
   detailKey: null,
+  detailStale: false, // a model arrived while an answer was being typed; repaint on blur
+  drafts: new Map(), // itemId -> {body, source, key, sent}
+  dropping: null, // itemId whose "why drop it" input is open
+  reanswering: new Set(), // settled questions whose composer was opened on purpose
   live: SNAPSHOT ? 'snapshot' : 'connecting',
 };
 
@@ -307,12 +311,12 @@ function itemVisible(item) {
 // ---------------------------------------------------------------------------
 
 let toastTimer = null;
-function toast(message) {
+function toast(message, ms = 1800) {
   const el = $('toast');
   el.textContent = message;
   el.dataset.show = 'true';
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => { el.dataset.show = 'false'; }, 1800);
+  toastTimer = setTimeout(() => { el.dataset.show = 'false'; }, ms);
 }
 
 async function copy(text, done = 'Copied') {
@@ -339,20 +343,101 @@ const copyButton = (label, text, done, cls = 'btn') =>
 
 const canTick = () => !SNAPSHOT && !state.model.cycle.readOnly;
 
-async function tick(item, resolution) {
+/** POST one change to an inbox item. Returns true when it was saved. Always reloads the model. */
+async function post(path, payload, done) {
+  let ok = false;
   try {
-    const res = await fetch('api/inbox', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ id: item.id, resolution, fingerprint: item.fingerprint }),
-    });
-    if (res.status === 409) toast('That item changed. Reloaded it.');
-    else if (!res.ok) toast((await res.json().catch(() => ({}))).error || 'Could not save that.');
-    else toast(resolution ? RESOLUTION[resolution][1] : 'Reopened');
+    const res = await fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+    ok = res.ok;
+    if (res.status === 403) toast('This cycle is archived. Nothing can be changed here.');
+    else if (!res.ok) toast((await res.json().catch(() => ({}))).error || (res.status === 409 ? 'That item changed. Reloaded it.' : 'Could not save that.'), 3200);
+    else toast(done);
   } catch {
-    toast('The report server is not answering.');
+    toast('The report server is not answering. Nothing was saved.', 3200);
   }
   await loadModel();
+  return ok;
+}
+
+const tick = (item, resolution, note = '') =>
+  post('api/inbox', { id: item.id, resolution, fingerprint: item.fingerprint, note }, resolution ? RESOLUTION[resolution][1] : 'Reopened');
+
+// -- answers -----------------------------------------------------------------
+
+const DRAFTS_KEY = 'taskflow-drafts';
+const newKey = () => (crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`);
+
+// Drafts outlive a reload: a phone evicts background tabs mid-sentence. Not in a
+// snapshot, though — every file:// page shares one storage origin.
+function loadDrafts() {
+  if (SNAPSHOT) return;
+  try {
+    for (const [id, draft] of Object.entries(JSON.parse(localStorage.getItem(DRAFTS_KEY) ?? '{}'))) {
+      if (draft && typeof draft.body === 'string') state.drafts.set(id, { body: draft.body, source: String(draft.source ?? ''), key: draft.key || newKey(), sent: false });
+    }
+  } catch {
+    // Storage is blocked or the value is junk: drafts just stay in memory.
+  }
+}
+
+function persistDrafts() {
+  if (SNAPSHOT) return;
+  try {
+    const out = {};
+    for (const [id, d] of state.drafts) if (d.body || d.source) out[id] = { body: d.body, source: d.source, key: d.key };
+    localStorage.setItem(DRAFTS_KEY, JSON.stringify(out));
+  } catch {
+    // See loadDrafts.
+  }
+}
+
+function draftOf(id) {
+  if (!state.drafts.has(id)) state.drafts.set(id, { body: '', source: '', key: newKey(), sent: false });
+  return state.drafts.get(id);
+}
+
+function editDraft(id, field, value) {
+  const draft = draftOf(id);
+  draft[field] = value;
+  // A retry of the same text must not double up; different text after a failed try is a new answer.
+  if (draft.sent) { draft.key = newKey(); draft.sent = false; }
+  persistDrafts();
+}
+
+async function saveAnswer(item, body, source) {
+  const draft = draftOf(item.id);
+  draft.sent = true;
+  document.activeElement?.blur(); // so the repaint that follows is not held back for the typist
+  const saved = await post('api/answer', {
+    id: item.id, fingerprint: item.fingerprint, body, source,
+    idempotencyKey: draft.key,
+    previousAnswerId: item.answers?.at(-1)?.id ?? null,
+  }, 'Answer saved');
+  if (saved) { state.drafts.delete(item.id); state.reanswering.delete(item.id); persistDrafts(); renderDetail(); }
+}
+
+const confirmAnswer = (item) => post('api/answer/confirm', { id: item.id, fingerprint: item.fingerprint }, 'Kept');
+
+/** Item ids contain ":", so find a composer by comparing dataset values, never by building a selector. */
+function focusComposer(id) {
+  const composer = [...$('detail').querySelectorAll('.composer')].find((el) => el.dataset.itemId === id);
+  const field = composer?.querySelector('textarea');
+  if (!field) return;
+  field.focus({ preventScroll: true });
+  composer.scrollIntoView({ block: 'nearest' });
+}
+
+function answerQuestion(item) {
+  select({ type: 'item', id: item.id }, { focusDetail: false });
+  if (narrow()) document.body.dataset.pane = 'detail';
+  requestAnimationFrame(() => focusComposer(item.id));
+}
+
+// Only a text field counts. A focused button in the composer is not typing, and
+// treating it as such would hold back the repaint that shows what the button did.
+function isTypingAnswer() {
+  const el = document.activeElement;
+  return Boolean(el && /^(TEXTAREA|INPUT)$/.test(el.tagName) && el.closest('.composer'));
 }
 
 /** The resolutions still ahead of an item, in order. */
@@ -372,8 +457,12 @@ function itemMeta(item) {
     ? `For ${batchLabel(m.batches[item.subject.batch])}`
     : item.subject.type === 'cycle' ? 'For this cycle' : 'Not batched';
   const who = item.to ? `, to ${item.to}` : '';
-  const blocking = item.blocking && item.state !== 'handled' ? ' Implement stops here until it is answered.' : '';
+  const blocking = item.blocking && item.state !== 'handled' ? ' Implement will not start this batch until it is answered or dropped.' : '';
 
+  if (item.state === 'changed' && item.kind === 'question') {
+    const held = item.blocking ? ' It holds the batch until you confirm it still applies.' : '';
+    return `You marked this ${RESOLUTION[item.resolution][1].toLowerCase()} ${ago(item.resolvedAt)}, but the question was reworded since.${held}`;
+  }
   if (item.state === 'changed') return `You marked this ${RESOLUTION[item.resolution][1].toLowerCase()} ${ago(item.resolvedAt)}, but the text has changed since.`;
   if (item.state === 'handled') return `${RESOLUTION[item.resolution][1]} ${ago(item.resolvedAt)}. ${where}.`;
   if (item.state === 'waiting') {
@@ -384,7 +473,29 @@ function itemMeta(item) {
   return `${where}${who}.${blocking}`;
 }
 
+function questionActions(item, { all }) {
+  const stop = (fn) => (event) => { event.stopPropagation(); fn(); };
+  const button = (label, fn, cls = 'btn') => h('button', { type: 'button', class: cls, onclick: stop(fn) }, label);
+  const buttons = [];
+  if (item.copyText && item.state !== 'handled') buttons.push(copyButton(KIND.question.copy, item.copyText, 'Copied'));
+  if (!canTick()) return buttons;
+
+  // In the queue there is one next move, and for a question it is always the same.
+  if (!all) {
+    if (item.state === 'changed') buttons.push(button('Check the answer', () => answerQuestion(item)));
+    else if (item.state !== 'handled') buttons.push(button('Answer', () => answerQuestion(item)));
+    return buttons;
+  }
+
+  if (item.state === 'changed') buttons.push(button(item.resolution === 'answered' ? 'Answer still applies' : 'Still applies', () => confirmAnswer(item), 'btn btn-primary'));
+  if (item.state === 'open') buttons.push(button(RESOLUTION.sent[0], () => tick(item, 'sent')));
+  if (item.state === 'open' || item.state === 'waiting') buttons.push(button(RESOLUTION.dropped[0], () => { state.dropping = state.dropping === item.id ? null : item.id; renderDetail(); }));
+  if (item.resolution) buttons.push(button('Reopen', () => tick(item, null)));
+  return buttons;
+}
+
 function itemActions(item, { all = false } = {}) {
+  if (item.kind === 'question') return questionActions(item, { all });
   const kind = KIND[item.kind] ?? KIND.todo;
   const buttons = [];
   if (item.copyText && item.state !== 'handled') buttons.push(copyButton(kind.copy, item.copyText, 'Copied'));
@@ -424,8 +535,95 @@ function slip(item, { inDetail = false } = {}) {
       item.origin === 'derived' ? h('div', { class: 'slip-meta', html: item.bodyHtml }) : h('p', { class: 'slip-meta' }, itemMeta(item)),
       inDetail && item.bodyHtml && item.origin !== 'derived' ? h('div', { class: 'prose', html: item.bodyHtml }) : null,
       inDetail && item.command ? h('p', { class: 'slip-meta' }, h('code', null, item.command)) : null,
+      inDetail && item.kind === 'question' && item.resolution === 'dropped' && item.userNote ? h('p', { class: 'slip-meta' }, `Dropped because: ${item.userNote}`) : null,
+      inDetail && item.kind === 'question' ? answerBlock(item) : null,
     ),
     h('div', { class: 'slip-actions' }, itemActions(item, { all: inDetail })),
+    inDetail && item.kind === 'question' && canTick() ? composer(item) : null,
+  );
+}
+
+const answerLine = (a) => [a.source, a.at ? `recorded ${ago(a.at)}` : null, a.via === 'mcp' ? 'through Claude' : null].filter(Boolean).join(', ');
+
+/** What came back. Shown in snapshots and archives too, where nothing can be typed. */
+function answerBlock(item) {
+  const earlier = (item.answers ?? []).filter((a) => a.id !== item.answer?.id).reverse();
+  if (!item.answer && !earlier.length) return null;
+  return h('div', { class: 'answer' },
+    item.answer ? [
+      h('p', { class: 'answer-head' }, h('strong', null, 'Answer'), answerLine(item.answer) ? ` — ${answerLine(item.answer)}` : ''),
+      h('div', { class: 'prose', html: item.answer.bodyHtml }),
+      item.state === 'changed' && item.answer.askedAs ? h('p', { class: 'slip-meta' }, `Given when the question read: “${item.answer.askedAs}”`) : null,
+    ] : null,
+    earlier.length ? h('details', { class: 'answer-history' },
+      h('summary', null, item.answer ? plural(earlier.length, 'earlier answer') : plural(earlier.length, 'answer', 'answers') + ' from before it was reopened'),
+      earlier.map((a) => h('div', { class: 'answer-earlier' }, h('p', { class: 'slip-meta' }, answerLine(a) || 'No source recorded'), h('div', { class: 'prose', html: a.bodyHtml }))),
+    ) : null,
+  );
+}
+
+/**
+ * No <form>: the page's CSP sets form-action 'none'. Buttons and listeners only.
+ * The height is set through the CSSOM, never a style attribute, for the same CSP.
+ */
+function composer(item) {
+  const draft = state.drafts.get(item.id) ?? { body: '', source: '' };
+
+  // A settled question does not need an open field under it. Offer one quietly,
+  // unless there is a draft waiting, which must never be hidden.
+  if (item.state === 'handled' && !state.reanswering.has(item.id) && !draft.body) {
+    return h('div', { class: 'composer', dataset: { itemId: item.id } },
+      h('div', { class: 'composer-actions' },
+        h('button', { type: 'button', class: 'btn btn-quiet', onclick: () => { state.reanswering.add(item.id); renderDetail(); requestAnimationFrame(() => focusComposer(item.id)); } },
+          item.answer ? 'Record a newer answer' : 'Record an answer after all')));
+  }
+
+  const grow = (el) => { el.style.height = 'auto'; el.style.height = `${el.scrollHeight + 2}px`; };
+  const bodyId = `answer-${item.fingerprint}`;
+
+  const body = h('textarea', {
+    id: bodyId, class: 'composer-body', rows: '3', maxlength: '8000', enterkeyhint: 'enter', autocapitalize: 'sentences',
+    placeholder: item.to ? `What did ${item.to} say?` : 'What did they say?',
+    oninput: (event) => { editDraft(item.id, 'body', event.target.value); grow(event.target); save.disabled = !event.target.value.trim(); },
+    // Ctrl/Cmd+Enter saves. The page's global shortcuts stand down on Ctrl and Meta, so this is the only listener.
+    onkeydown: (event) => { if (event.key === 'Enter' && (event.ctrlKey || event.metaKey) && body.value.trim()) { event.preventDefault(); saveAnswer(item, body.value, source.value); } },
+  });
+  body.value = draft.body;
+  const source = h('input', {
+    type: 'text', class: 'composer-source', maxlength: '200', autocomplete: 'off',
+    placeholder: 'Who said it, where, when',
+    'aria-label': 'Who said it, where and when',
+    oninput: (event) => editDraft(item.id, 'source', event.target.value),
+  });
+  source.value = draft.source;
+  const save = h('button', { type: 'button', class: 'btn btn-primary', onclick: () => saveAnswer(item, body.value, source.value) }, item.answer ? 'Replace the answer' : 'Save answer');
+  save.disabled = !draft.body.trim();
+  requestAnimationFrame(() => grow(body));
+
+  const options = item.options?.length && !item.answer ? h('div', { class: 'composer-options', role: 'group', 'aria-label': 'Answer with one of the choices' },
+    item.options.map((option) => h('button', { type: 'button', class: 'btn btn-option', onclick: () => saveAnswer(item, option, source.value) }, option))) : null;
+
+  let drop = null;
+  if (state.dropping === item.id) {
+    const why = h('input', { type: 'text', class: 'composer-source', maxlength: '2000', placeholder: 'Why is no answer needed?', 'aria-label': 'Why is no answer needed?', oninput: () => { confirmDrop.disabled = !why.value.trim(); } });
+    const confirmDrop = h('button', { type: 'button', class: 'btn', onclick: async () => { state.dropping = null; why.blur(); await tick(item, 'dropped', why.value); renderDetail(); } }, 'Drop the question');
+    confirmDrop.disabled = true;
+    drop = h('div', { class: 'composer-drop' },
+      h('p', { class: 'slip-meta' }, 'Dropping lets implement start without an answer. The reason is kept with the question.'),
+      why, h('div', { class: 'composer-actions' }, confirmDrop, h('button', { type: 'button', class: 'btn btn-quiet', onclick: () => { state.dropping = null; renderDetail(); } }, 'Cancel')));
+    requestAnimationFrame(() => why.focus({ preventScroll: true }));
+  }
+
+  return h('div', {
+    class: 'composer', dataset: { itemId: item.id },
+    // Typing held a repaint back; paint it once focus has really left the composer.
+    onfocusout: (event) => { if (!event.currentTarget.contains(event.relatedTarget) && state.detailStale) requestAnimationFrame(() => { if (!isTypingAnswer()) renderDetail(); }); },
+  },
+    drop,
+    options,
+    h('label', { class: 'composer-label', for: bodyId }, item.answer ? 'A newer answer' : options ? 'Or in your own words' : 'The answer'),
+    body, source,
+    h('div', { class: 'composer-actions' }, save, h('span', { class: 'slip-meta composer-hint' }, 'Markdown works. Ctrl+Enter saves.')),
   );
 }
 
@@ -822,6 +1020,10 @@ function renderDetail() {
   }
 
   const key = `${sel?.type}:${sel?.id}`;
+  // Replacing the pane under a typist ends an IME or autocorrect composition, and
+  // iOS will not reopen the keyboard for a focus() we make. Wait for the blur.
+  if (key === state.detailKey && isTypingAnswer()) { state.detailStale = true; return; }
+  state.detailStale = false;
   const keepScroll = key === state.detailKey ? pane.scrollTop : 0;
   state.detailKey = key;
   replace(pane, back, content);
@@ -911,7 +1113,7 @@ document.addEventListener('keydown', (event) => {
   const typing = /^(INPUT|SELECT|TEXTAREA)$/.test(event.target.tagName);
   if (event.key === 'Escape') {
     if (document.querySelector('dialog[open]')) return;
-    if (typing) { event.target.blur(); if (state.query) clearFilters(); return; }
+    if (typing) { event.target.blur(); if (event.target.id === 'search' && state.query) clearFilters(); return; }
     document.body.dataset.pane = 'queue';
     return;
   }
@@ -926,6 +1128,7 @@ document.addEventListener('keydown', (event) => {
     c: () => { const text = selectedCommand(); if (text) copy(text, 'Copied'); },
     x: () => {
       const item = state.sel?.type === 'item' ? state.model.inbox[state.sel.id] : null;
+      if (item?.kind === 'question' && canTick() && item.state !== 'handled') { answerQuestion(item); return; }
       const step = item ? nextSteps(item)[0] : null;
       if (step) tick(item, step);
     },
@@ -990,6 +1193,7 @@ window.addEventListener('hashchange', () => {
 
 async function boot() {
   readHash();
+  loadDrafts();
   $('search').value = state.query;
   applyTheme(document.documentElement.dataset.theme ?? 'system');
   document.body.dataset.pane = state.sel ? 'detail' : 'queue';

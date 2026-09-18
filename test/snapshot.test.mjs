@@ -38,3 +38,23 @@ test('a snapshot is one self-contained file that cannot be broken out of', async
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test('a snapshot carries recorded answers, and hostile answer text cannot break out of it', async () => {
+  const spec = structuredClone(specs.questions);
+  spec.answers.items['question:qs105:q-slip-logo'].answers[0].body = 'Wordmark. </script><script>window.pwned = true</script>';
+  const dir = await materializeTemp(spec);
+  const app = await createApp({ dir, version: 'test' });
+  try {
+    const out = await writeSnapshot(app, { outFile: join(dir, 'snapshot.html') });
+    const html = await readFile(out.path, 'utf8');
+    const block = /<script type="application\/json" id="snapshot-data">([\s\S]*?)<\/script>/.exec(html);
+    assert.ok(!block[1].includes('<'), 'no raw "<" inside the JSON block');
+    const answer = JSON.parse(block[1]).model.inbox['question:qs105:q-slip-logo'].answer;
+    assert.match(answer.body, /Wordmark\./);
+    assert.ok(!/<script/i.test(answer.bodyHtml), 'rendered escape-first');
+    assert.equal(html.match(/<script\b/g).length, 3);
+  } finally {
+    await app.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});

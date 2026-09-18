@@ -86,7 +86,7 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 h1, h2, h3, h4, h5, h6, p, dl, dd, ul, ol, figure { margin: 0; }
-button, input, select { font: inherit; color: inherit; }
+button, input, select, textarea { font: inherit; color: inherit; }
 a { color: inherit; text-decoration-thickness: 1px; text-underline-offset: 0.18em; }
 a:hover { text-decoration-thickness: 2px; }
 code, kbd, .code { font-family: var(--code); font-size: 0.94em; }
@@ -115,6 +115,9 @@ code, kbd, .code { font-family: var(--code); font-size: 0.94em; }
 .btn-primary:hover { background: var(--ink-2); border-color: var(--ink-2); }
 .btn-quiet { border-color: transparent; background: transparent; color: var(--ink-2); padding-inline: 0.4rem; }
 .btn-quiet:hover { border-color: var(--rule); color: var(--ink); }
+.btn:disabled { opacity: 0.45; cursor: default; }
+.btn:disabled:hover { border-color: var(--rule); background: var(--strip); }
+.btn-primary:disabled:hover { border-color: var(--ink); background: var(--ink); }
 
 select, input[type='search'] {
   padding: 0.3rem 0.55rem;
@@ -326,6 +329,35 @@ input::placeholder { color: var(--ink-3); }
   .slip-actions { grid-column: 2; justify-content: flex-start; padding-top: 0; }
 }
 
+/* ---- answers ------------------------------------------------------------- */
+
+/* An answer is settled ink, not a state that wants attention: a plain edge, no colour. */
+.answer { margin-top: 0.65rem; padding: 0.1rem 0 0.1rem 0.75rem; border-left: 2px solid var(--ink); }
+.answer-head { color: var(--ink-2); font-size: var(--fs-0); }
+.answer-head strong { color: var(--ink); }
+.slip[data-place='detail'] .answer .prose { margin-top: 0.2rem; }
+.answer-history { margin-top: 0.5rem; color: var(--ink-2); font-size: var(--fs-0); }
+.answer-history summary { cursor: pointer; }
+.answer-earlier { margin-top: 0.4rem; padding-top: 0.4rem; border-top: 1px solid var(--rule); }
+
+.composer { grid-column: 2; display: grid; gap: 0.4rem; padding: 0 0.75rem 0.75rem; }
+.composer-label { color: var(--ink-2); font-size: var(--fs-0); }
+.composer-body, .composer-source {
+  width: 100%; padding: 0.5rem 0.6rem;
+  border: 1px solid var(--rule); border-radius: 4px;
+  background: var(--ground);
+  /* Never under 16px: iOS zooms the whole page into a smaller field and does not zoom back. */
+  font-size: max(16px, 1rem); line-height: 1.45;
+}
+.composer-body { display: block; min-height: 5.5rem; max-height: 50vh; resize: vertical; }
+.composer-body:focus-visible, .composer-source:focus-visible { border-color: var(--ink); }
+.composer-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; }
+.composer-options { display: flex; flex-wrap: wrap; gap: 0.4rem; }
+.composer-drop { display: grid; gap: 0.4rem; padding: 0.6rem; border: 1px dashed var(--ink-3); border-radius: 4px; }
+/* Thumb-sized: these are the buttons pressed on a phone, mid-conversation. */
+.composer .btn { min-height: 2.75rem; padding-inline: 1rem; }
+.btn-option { white-space: normal; text-align: left; }
+
 /* ---- detail pane --------------------------------------------------------- */
 
 .detail { padding-right: 0.25rem; }
@@ -425,6 +457,10 @@ kbd { padding: 0.05rem 0.4rem; border: 1px solid var(--rule); border-bottom-widt
 /* ---- one column ---------------------------------------------------------- */
 
 @media (max-width: 62rem) {
+  .composer { grid-column: 1 / -1; padding-inline: 0.6rem; }
+  .composer-hint { display: none; } /* no Ctrl key here */
+  .slip[data-place='detail'] .slip-actions .btn { min-height: 2.75rem; padding-inline: 1rem; }
+
   body { height: auto; min-height: 100dvh; display: block; }
   .board { display: block; padding: 0 0.75rem; }
   .queue, .detail { overflow: visible; }
