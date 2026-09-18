@@ -4,7 +4,6 @@ import { join } from 'node:path';
 import { after, before, describe, test } from 'node:test';
 import { createAnswerStore } from '../scripts/report/answers.mjs';
 import { openCycle } from '../scripts/report/cycle.mjs';
-import { evaluateClaim, EXIT } from '../scripts/report/gate.mjs';
 import { kitchenSink, questions } from './fixtures/specs.mjs';
 import { materializeTemp } from './helpers/cycle.mjs';
 
@@ -109,77 +108,28 @@ test('answers swept into an archive are copied back and reported', async () => {
   await rm(dir, { recursive: true, force: true });
 });
 
-describe('questions cycle through the human store', () => {
-  let dir;
-  let cycle;
-  let built;
-  before(async () => {
-    dir = await materializeTemp(questions, NOW);
-    cycle = openCycle({ root: dir });
-    built = await cycle.build({ now: NOW });
-  });
-  after(() => rm(dir, { recursive: true, force: true }));
+// What any HumanStore must do is in test/contracts/human-store.mjs, run on files by
+// test/human-contract.test.mjs. What follows is about the two files behind this one.
 
-  const state = (id) => built.model.inbox[id]?.state;
+test('other kinds still tick into the per-cycle file, never into answers.json', async () => {
+  const dirKs = await materializeTemp(kitchenSink, NOW);
+  const ks = openCycle({ root: dirKs });
+  const first = await ks.build({ now: NOW });
+  await ks.human.setResolution(first.model.inbox['verify-close:hb121:fixed'], { resolution: 'verified' }, first.model.cycle.lastTriage);
+  const tickFile = JSON.parse(await readFile(join(dirKs, 'report-inbox.sam.json'), 'utf8'));
+  assert.equal(tickFile.items['verify-close:hb121:fixed'].resolution, 'verified');
+  assert.deepEqual((await readdir(dirKs)).filter((name) => name.startsWith('answers.json')), []);
+  await rm(dirKs, { recursive: true, force: true });
+});
 
-  test('each question carries its own state', () => {
-    assert.equal(state('question:qs101:q-cover-ratio'), 'open');
-    assert.equal(state('question:qs101:q-sold-out'), 'waiting', 'sent');
-    assert.equal(state('question:qs105:q-slip-logo'), 'handled');
-    assert.equal(state('question:qs106:q-author-order'), 'changed', 'answered, then reworded by triage');
-  });
-
-  test('the settling answer is rendered; a changed question still shows what was said', () => {
-    const answered = built.model.inbox['question:qs105:q-slip-logo'];
-    assert.match(answered.answer.bodyHtml, /<strong>full wordmark<\/strong>/);
-    assert.equal(answered.answer.source, 'Mara, by phone, 3 Feb');
-    const changed = built.model.inbox['question:qs106:q-author-order'];
-    assert.equal(changed.answer.body, 'Newest first.');
-    assert.equal(changed.answer.askedAs, 'Ask Mara about edition order');
-    assert.equal(built.model.inbox['question:qs101:q-cover-ratio'].answer, null);
-    assert.deepEqual(built.model.inbox['question:qs101:q-cover-ratio'].options, ['Portrait, 2:3', 'Square']);
-  });
-
-  test('lanes follow the answers', () => {
-    const lanes = Object.fromEntries(Object.values(built.model.batches).map((b) => [b.key, b.laneReason ? `${b.lane}/${b.laneReason}` : b.lane]));
-    assert.deepEqual(lanes, {
-      'batch-1': 'blocked/waiting-on-answers',
-      'batch-2': 'ready',
-      'batch-3': 'blocked/deps',
-      'batch-4': 'ready',
-      'batch-5': 'ready',
-      'batch-6': 'blocked/waiting-on-answers',
-    });
-    assert.equal(built.model.batches['batch-1'].blockingQuestions, 2, 'the colour question does not block');
-  });
-
-  test('answering through the store opens the gate; confirming a reworded one does too', async () => {
-    assert.equal(evaluateClaim(built.model, { batchKey: 'batch-6' }).exit, EXIT.QUESTIONS);
-    await cycle.human.confirm(built.model.inbox['question:qs106:q-author-order']);
-    await cycle.human.addAnswer(built.model.inbox['question:qs101:q-cover-ratio'], { body: 'Square' });
-    await cycle.human.addAnswer(built.model.inbox['question:qs101:q-sold-out'], { body: 'Keep them, with a badge.' });
-
-    const next = await cycle.build({ now: NOW });
-    assert.equal(evaluateClaim(next.model, { batchKey: 'batch-6' }).exit, EXIT.OK);
-    assert.deepEqual(next.model.laneOrder.ready, ['batch-1', 'batch-2', 'batch-4', 'batch-5', 'batch-6']);
-    assert.equal(next.model.inbox['question:qs106:q-author-order'].answer.askedAs, 'Ask Mara about edition order', 'the answer keeps the wording it was given for');
-  });
-
-  test('an answer whose question is gone stays in the store for the claim to surface', () => {
-    assert.equal(built.model.inbox['question:qs102:q-hours-format'], undefined);
-    assert.equal(built.records.items['question:qs102:q-hours-format'].answers[0].body, 'am/pm, please.');
-  });
-
-  test('other kinds still tick into the per-cycle file', async () => {
-    const dirKs = await materializeTemp(kitchenSink, NOW);
-    const ks = openCycle({ root: dirKs });
-    const first = await ks.build({ now: NOW });
-    await ks.human.setResolution(first.model.inbox['verify-close:hb121:fixed'], { resolution: 'verified' }, first.model.cycle.lastTriage);
-    const tickFile = JSON.parse(await readFile(join(dirKs, 'report-inbox.sam.json'), 'utf8'));
-    assert.equal(tickFile.items['verify-close:hb121:fixed'].resolution, 'verified');
-    assert.equal((await ks.build({ now: NOW })).model.inbox['verify-close:hb121:fixed'].state, 'waiting');
-    await rm(dirKs, { recursive: true, force: true });
-  });
+test('questions are recorded in answers.json, never in the per-cycle file', async () => {
+  const dir = await materializeTemp(questions, NOW);
+  const cycle = openCycle({ root: dir });
+  const { model } = await cycle.build({ now: NOW });
+  await cycle.human.setResolution(model.inbox['question:qs101:q-cover-ratio'], { resolution: 'sent' });
+  assert.equal(JSON.parse(await readFile(join(dir, 'answers.json'), 'utf8')).items['question:qs101:q-cover-ratio'].resolution, 'sent');
+  assert.deepEqual((await readdir(dir)).filter((name) => name.startsWith('report-inbox.')), []);
+  await rm(dir, { recursive: true, force: true });
 });
 
 describe('question ticks from before answers existed', () => {

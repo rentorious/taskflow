@@ -10,23 +10,14 @@
 import { randomBytes } from 'node:crypto';
 import { readFile, readdir, rename, writeFile } from 'node:fs/promises';
 import { basename, dirname, join } from 'node:path';
+import { checkResolution, cleanAnswer, cleanResolutionNote, fail, placeAnswer } from './human-rules.mjs';
+
+export { MAX_ANSWER_CHARS, MAX_NOTE_CHARS, MAX_SOURCE_CHARS } from './human-rules.mjs';
 
 const SCHEMA_VERSION = 1;
 export const ANSWERS_FILE = 'answers.json';
-export const MAX_ANSWER_CHARS = 8000;
-export const MAX_SOURCE_CHARS = 200;
-export const MAX_NOTE_CHARS = 2000;
-const RESOLUTIONS = new Set(['sent', 'dropped']);
 
 const empty = () => ({ schema_version: SCHEMA_VERSION, updated_at: null, items: {} });
-const fail = (status, message) => Object.assign(new Error(message), { status });
-
-function text(value, max, label) {
-  const out = String(value ?? '').trim();
-  // Refuse rather than cut: a silently shortened client answer is worse than an error.
-  if (out.length > max) throw fail(413, `${label} is too long: ${out.length} characters, ${max} at most.`);
-  return out;
-}
 
 /**
  * @param {string} path  <output_dir>/answers.json
@@ -146,11 +137,13 @@ export function createAnswerStore(path, { readOnly = false, archiveRoot = null }
      * @param {{taskId,key,fingerprint,title,text}} question  the question as it reads now
      */
     setResolution(id, question, { resolution, note = '' }) {
-      if (resolution !== null && !RESOLUTIONS.has(resolution)) return Promise.reject(fail(400, 'A question is answered by saving an answer. Use sent, dropped, or reopen it.'));
+      try {
+        checkResolution(resolution);
+      } catch (error) {
+        return Promise.reject(error);
+      }
       return write((data) => {
-        const cleanNote = text(note, MAX_NOTE_CHARS, 'The note');
-        // Dropping is the only way past the claim gate without an answer, so it must say why.
-        if (resolution === 'dropped' && !cleanNote) throw fail(400, 'Say why this question is being dropped.');
+        const cleanNote = cleanResolutionNote(resolution, note);
         stamp(record(data, id, question), question, resolution, cleanNote);
         return { value: data.items[id] };
       });
@@ -166,30 +159,21 @@ export function createAnswerStore(path, { readOnly = false, archiveRoot = null }
      */
     addAnswer(id, question, { body, source = '', idempotencyKey = null, previousAnswerId, via = 'web' }) {
       return write((data) => {
-        const cleanBody = text(body, MAX_ANSWER_CHARS, 'The answer');
-        if (!cleanBody) throw fail(400, 'The answer is empty.');
-        const cleanSource = text(source, MAX_SOURCE_CHARS, 'The source');
+        const clean = cleanAnswer({ body, source, idempotencyKey, via });
         const entry = record(data, id, question);
-
-        const replay = idempotencyKey ? entry.answers.find((a) => a.idempotencyKey === idempotencyKey) : null;
-        if (replay) return { unchanged: true, value: entry };
-
-        const newest = entry.answers.at(-1)?.id ?? null;
-        if (previousAnswerId !== undefined && (previousAnswerId ?? null) !== newest) {
-          throw fail(409, 'Someone saved another answer to this question in the meantime. Reload and check it.');
-        }
+        if (placeAnswer(entry.answers, { idempotencyKey: clean.idempotencyKey, previousAnswerId }) === 'replay') return { unchanged: true, value: entry };
 
         entry.answers.push({
           id: randomBytes(6).toString('hex'),
           at: new Date().toISOString(),
-          body: cleanBody,
-          source: cleanSource,
-          via,
+          body: clean.body,
+          source: clean.source,
+          via: clean.via,
           // What was actually answered, word for word: the question may be reworded or removed later.
           questionFingerprint: question.fingerprint,
           questionTitle: question.title,
           questionText: question.text,
-          idempotencyKey: idempotencyKey ? String(idempotencyKey).slice(0, 80) : null,
+          idempotencyKey: clean.idempotencyKey,
         });
         stamp(entry, question, 'answered', '');
         return { value: entry };
