@@ -12,9 +12,10 @@ import { join } from 'node:path';
 import { ANSWERS_FILE, createAnswerStore } from './answers.mjs';
 import { createTickStore } from './ticks.mjs';
 
-const isQuestion = (id) => id.startsWith('question:');
+export const isQuestion = (id) => id.startsWith('question:');
 
-const questionOf = (item) => ({ taskId: item.subject.id, key: item.id.split(':').slice(2).join(':'), fingerprint: item.fingerprint, title: item.title, text: item.text });
+/** The question behind an inbox item, as a store keys and snapshots it. */
+export const questionOf = (item) => ({ taskId: item.subject.id, key: item.id.split(':').slice(2).join(':'), fingerprint: item.fingerprint, title: item.title, text: item.text });
 
 /**
  * @param {object} where

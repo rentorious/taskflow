@@ -10,7 +10,8 @@ import { readFile, rename, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
 const SCHEMA_VERSION = 1;
-const MAX_NOTE = 2000;
+// Cut, not refused: a tick's note is the developer's own aside, unlike a client's answer.
+export const MAX_TICK_NOTE_CHARS = 2000;
 
 const empty = (slug, cycle) => ({ schema_version: SCHEMA_VERSION, slug, cycle, updated_at: null, items: {} });
 
@@ -54,7 +55,7 @@ export function createTickStore(dir, slug, { readOnly = false } = {}) {
           at: new Date().toISOString(),
           fingerprint: tick.fingerprint,
           title: tick.title,
-          note: String(tick.note ?? '').slice(0, MAX_NOTE),
+          note: String(tick.note ?? '').slice(0, MAX_TICK_NOTE_CHARS),
         };
       }
       data.schema_version = SCHEMA_VERSION;
