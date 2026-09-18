@@ -23,6 +23,17 @@ async function archiveName(q, { projectId, userId, wanted }) {
 }
 
 /**
+ * A push is a one-shot read, so every push dates a standing problem "since just now". The server has
+ * seen the earlier pushes: keep the first date. Without this the date moves on every push, the model's
+ * version with it, and every open page repaints for a push that changed nothing.
+ */
+function sinceFirstSeen(payload, previous) {
+  const first = new Map((previous?.problems ?? []).filter((p) => p?.since).map((p) => [`${p.code}|${p.subject}`, p.since]));
+  if (!first.size) return payload;
+  return { ...payload, problems: payload.problems.map((p) => (first.has(`${p.code}|${p.subject}`) ? { ...p, since: first.get(`${p.code}|${p.subject}`) } : p)) };
+}
+
+/**
  * @returns {Promise<{cycleUuid: string, changed: boolean, missing: string[], archived: string|null}>}
  */
 export async function ingestCycle(db, { projectId, userId, payload }) {
@@ -38,19 +49,20 @@ export async function ingestCycle(db, { projectId, userId, payload }) {
     if (!member.rowCount) throw fail(404, 'No such project.');
     if (!PUSHERS.has(member.rows[0].role)) throw fail(403, 'Only a developer of this project can push a cycle.');
 
-    const existing = (await q.query('select project_id, user_id, is_live, payload_sha256 from cycle where id = $1 for update', [cycle.id])).rows[0];
+    const existing = (await q.query('select project_id, user_id, is_live, payload_sha256, snapshot from cycle where id = $1 for update', [cycle.id])).rows[0];
     // Someone else's cycle id answers exactly like an unknown project: its existence is not ours to confirm.
     if (existing && (existing.project_id !== projectId || String(existing.user_id) !== String(userId))) throw fail(404, 'No such project.');
     if (existing && !existing.is_live) throw fail(409, 'This cycle was archived on the server. Start a new one with /taskflow:triage.');
 
     let changed = true;
     let archived = null;
+    const stored = JSON.stringify(sinceFirstSeen(payload, existing?.snapshot));
     if (existing) {
       changed = existing.payload_sha256 !== hash;
       await q.query(
         `update cycle set snapshot = $2, payload_sha256 = $3, last_triage = $4, dev_head = $5, pushed_at = now(), pushed_from = $6, rev = rev + $7
          where id = $1 and project_id = $8 and user_id = $9`,
-        [cycle.id, JSON.stringify(payload), hash, cycle.lastTriage, cycle.devHead, payload.pushedFrom ?? null, changed ? 1 : 0, projectId, userId],
+        [cycle.id, stored, hash, cycle.lastTriage, cycle.devHead, payload.pushedFrom ?? null, changed ? 1 : 0, projectId, userId],
       );
     } else {
       const live = (await q.query('select id, last_triage from cycle where project_id = $1 and user_id = $2 and is_live for update', [projectId, userId])).rows[0];
@@ -62,7 +74,7 @@ export async function ingestCycle(db, { projectId, userId, payload }) {
       await q.query(
         `insert into cycle (id, project_id, user_id, is_live, last_triage, dev_head, snapshot, payload_sha256, pushed_from)
          values ($1, $2, $3, true, $4, $5, $6, $7, $8)`,
-        [cycle.id, projectId, userId, cycle.lastTriage, cycle.devHead, JSON.stringify(payload), hash, payload.pushedFrom ?? null],
+        [cycle.id, projectId, userId, cycle.lastTriage, cycle.devHead, stored, hash, payload.pushedFrom ?? null],
       );
     }
 

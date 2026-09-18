@@ -17,8 +17,8 @@ export function testDatabaseUrl() {
     throw new Error([
       'TASKFLOW_TEST_DATABASE_URL is not set, so the server tests cannot run.',
       'Create a database for them once, then put its URL in server/.env.test:',
-      '  createdb -h localhost -p 5433 -U postgres taskflow_test',
-      "  echo 'TASKFLOW_TEST_DATABASE_URL=postgres://postgres:<password>@localhost:5433/taskflow_test' > server/.env.test",
+      '  createdb taskflow_test',
+      "  echo 'TASKFLOW_TEST_DATABASE_URL=postgres://<user>:<password>@<host>:<port>/taskflow_test' > server/.env.test",
       'and run the tests with: npm --prefix server test',
     ].join('\n'));
   }

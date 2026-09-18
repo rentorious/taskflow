@@ -43,6 +43,25 @@ describe('a push', () => {
     }
   });
 
+  test('a standing problem keeps the date it was first seen, so repeating a push repaints nobody', async () => {
+    const s = await setup(specs['kitchen-sink']);
+    try {
+      assert.ok(s.payload.problems.some((p) => p.since), 'the fixture has an unreadable batch file, dated by the read');
+      const source = createPgSource(s.t.db, { projectId: s.projectId, ownerId: s.user.id });
+      await push(s.t.db, { projectId: s.projectId, userId: s.user.id, payload: s.payload, blobs: s.blobs });
+      const first = buildModel(await source.reader('live').read(), { now: NOW });
+
+      const later = structuredClone(s.payload);
+      for (const problem of later.problems) if (problem.since) problem.since = '2030-01-01T00:00:00.000Z';
+      const again = await ingestCycle(s.t.db, { projectId: s.projectId, userId: s.user.id, payload: later });
+      const second = buildModel(await source.reader('live').read(), { now: NOW });
+      assert.deepEqual([again.changed, second.version], [false, first.version]);
+      assert.deepEqual(second.health.problems.map((p) => p.since), first.health.problems.map((p) => p.since));
+    } finally {
+      await s.close();
+    }
+  });
+
   test('a change moves the revision, and only new blobs are asked for', async () => {
     const s = await setup();
     try {
