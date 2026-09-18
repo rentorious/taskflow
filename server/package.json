@@ -1,0 +1,19 @@
+{
+  "name": "taskflow-server",
+  "version": "0.1.0",
+  "private": true,
+  "description": "The hosted taskflow dashboard. Lives beside the plugin and reuses scripts/report/; the plugin itself never needs this installed.",
+  "license": "MIT",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "start": "node main.mjs",
+    "migrate": "node migrate.mjs",
+    "seed": "node dev/seed.mjs",
+    "test": "node --env-file-if-exists=.env.test --test \"test/*.test.mjs\""
+  },
+  "dependencies": {
+    "pg": "^8.23.0"
+  }
+}
