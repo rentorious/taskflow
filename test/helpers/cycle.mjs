@@ -37,6 +37,8 @@ export async function materialize(spec, dir, now = Date.now()) {
   for (const [key, ageMs] of Object.entries(spec.locks ?? {})) {
     const path = join(dir, 'batches', `${key}.lock`);
     await mkdir(path, { recursive: true });
+    // Contents first: writing into a directory moves its mtime, and the age is the point.
+    for (const [name, body] of Object.entries(spec.lockFiles?.[key] ?? {})) await writeFile(join(path, name), JSON.stringify(body, null, 2));
     await utimes(path, new Date(now - ageMs), new Date(now - ageMs));
   }
 
@@ -49,6 +51,8 @@ export async function materialize(spec, dir, now = Date.now()) {
 
   if (spec.summary) await writeFile(join(dir, spec.summary.name), spec.summary.markdown);
   if (spec.ticks) await writeFile(join(dir, `report-inbox.${spec.slug}.json`), JSON.stringify(spec.ticks, null, 2));
+  // Answers belong to the project, not to a cycle: only ever at the top of the output directory.
+  if (spec.answers) await writeFile(join(dir, 'answers.json'), typeof spec.answers === 'string' ? spec.answers : JSON.stringify(spec.answers, null, 2));
 
   for (const [name, archived] of Object.entries(spec.archives ?? {})) await materialize(archived, join(dir, 'archive', name), now);
   return dir;

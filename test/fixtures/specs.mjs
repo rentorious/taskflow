@@ -3,6 +3,8 @@
 //
 //   node test/fixtures/materialize.mjs kitchen-sink /tmp/ks   # then point the server at /tmp/ks
 
+import { fingerprint } from '../../scripts/report/inbox.mjs';
+
 const MIN = 60 * 1000;
 const HOUR = 60 * MIN;
 
@@ -257,4 +259,76 @@ export const archiveShape = {
   summary: { name: 'triage-sam-2025-11-20.md', markdown: '# Older summary\n\nDated before `last_triage` on purpose.\n' },
 };
 
-export const specs = { 'kitchen-sink': { ...kitchenSink, archives: { '2025-12-01': archiveShape } }, 'all-pending': allPending, 'archive-shape': archiveShape };
+// ---------------------------------------------------------------------------
+// questions: schema v3, one need per question, answers recorded against some
+// ---------------------------------------------------------------------------
+
+const ask = (key, title, text, extra = {}) => ({ key, kind: 'question', title, text, to: 'Mara', blocking: true, ...extra });
+
+const qsNeeds = {
+  qs101: [
+    ask('q-cover-ratio', 'Ask Mara which cover ratio the shelf should use', 'Hi Mara, the new shelf can crop covers two ways. Which one do you want?', { options: ['Portrait, 2:3', 'Square'] }),
+    ask('q-sold-out', 'Ask Mara whether sold-out titles stay on the shelf', 'Should a title that is sold out stay on the shelf with a badge, or disappear until it is back?'),
+    ask('q-badge-colour', 'Ask Mara about the badge colour', 'Any preference for the badge colour? I will use the brand green otherwise.', { blocking: false }),
+  ],
+  qs103: [ask('q-points-expiry', 'Ask Mara when loyalty points expire', 'Do loyalty points expire? If so, after how long?')],
+  qs105: [ask('q-slip-logo', 'Ask Mara which logo goes on the packing slip', 'Which logo should the packing slip carry: the shop mark or the full wordmark?')],
+  qs106: [ask('q-author-order', 'Ask Mara how editions are ordered', 'Should editions be listed newest first, or by format?')],
+};
+
+const qsTasks = {
+  qs101: task('Shelf: crop covers and handle sold-out titles', { id: 'qs101', batch: 'batch-1', priority: 'high', confidence: 'medium', needs: qsNeeds.qs101 }),
+  qs102: task('Footer: add the opening hours', { id: 'qs102', batch: 'batch-2', type: 'copy-change', needs: [] }),
+  qs103: task('Loyalty points on the account page', { id: 'qs103', batch: 'batch-3', size: 'medium', confidence: 'low', needs: qsNeeds.qs103 }),
+  qs104: task('Search: match accented author names', { id: 'qs104', batch: 'batch-4', type: 'bug', needs: [] }),
+  qs105: task('Printable packing slip', { id: 'qs105', batch: 'batch-5', area: 'admin', needs: qsNeeds.qs105 }),
+  qs106: task('Author pages list every edition', { id: 'qs106', batch: 'batch-6', needs: qsNeeds.qs106 }),
+};
+
+const answeredEntry = (taskId, need, { resolution = 'answered', answers = [], note = '', title = need.title, text = need.text } = {}) => ({
+  taskId, key: need.key, resolution, fingerprint: fingerprint(title, text, need.options ?? null), title, text, note, at: '2026-02-03T09:30:00.000Z',
+  answers: answers.map((a, i) => ({
+    id: `seed${taskId}${i}`, at: '2026-02-03T09:30:00.000Z', source: 'Mara, by phone, 3 Feb', via: 'web', idempotencyKey: null,
+    questionFingerprint: fingerprint(title, text, need.options ?? null), questionTitle: title, questionText: text, ...a,
+  })),
+});
+
+export const questions = {
+  slug: 'sam',
+  index: {
+    schema_version: 3,
+    last_triage: '2026-02-02',
+    developer: 'Sam Rivera',
+    developer_id: '000001',
+    dev_head: 'def5678ab',
+    tasks: qsTasks,
+    batches: {
+      'batch-1': { name: 'Shelf covers and sold-out titles', tasks: ['qs101'], suggested_branch: 'feat/shelf-covers', depends_on: [] },
+      'batch-2': { name: 'Opening hours in the footer', tasks: ['qs102'], suggested_branch: 'chore/footer-hours', depends_on: [] },
+      'batch-3': { name: 'Loyalty points', tasks: ['qs103'], suggested_branch: 'feat/loyalty-points', depends_on: ['batch-1'] },
+      'batch-4': { name: 'Accented author search', tasks: ['qs104'], suggested_branch: 'fix/search-accents', depends_on: [] },
+      'batch-5': { name: 'Packing slip', tasks: ['qs105'], suggested_branch: 'feat/packing-slip', depends_on: [] },
+      'batch-6': { name: 'Author editions', tasks: ['qs106'], suggested_branch: 'feat/author-editions', depends_on: [] },
+    },
+    suggestions: [],
+  },
+  batchFiles: Object.fromEntries(Object.entries(qsTasks).map(([id, t]) => [t.batch, { status: 'pending', branch: null, pr_url: null, tasks: { [id]: { status: 'planned', commit_shas: [] } } }])),
+  plans: Object.fromEntries(Object.keys(qsTasks).map((id) => [id, plan(qsTasks[id].name)])),
+  answers: {
+    schema_version: 1,
+    updated_at: '2026-02-03T09:30:00.000Z',
+    items: {
+      // Answered: batch-5 is claimable.
+      'question:qs105:q-slip-logo': answeredEntry('qs105', qsNeeds.qs105[0], { answers: [{ body: 'Use the **full wordmark**, top left.' }] }),
+      // Answered, then triage reworded the question: shows as changed and blocks again.
+      'question:qs106:q-author-order': answeredEntry('qs106', qsNeeds.qs106[0], { title: 'Ask Mara about edition order', text: 'How should editions be ordered?', answers: [{ body: 'Newest first.' }] }),
+      // Sent, no answer yet.
+      'question:qs101:q-sold-out': answeredEntry('qs101', qsNeeds.qs101[1], { resolution: 'sent' }),
+      // A question triage no longer asks; the answer is still real client input.
+      'question:qs102:q-hours-format': { taskId: 'qs102', key: 'q-hours-format', resolution: 'answered', fingerprint: 'gone', title: 'Ask Mara how to write the hours', text: '24-hour or am/pm?', note: '', at: '2026-01-20T10:00:00.000Z',
+        answers: [{ id: 'seedqs1020', at: '2026-01-20T10:00:00.000Z', body: 'am/pm, please.', source: 'Mara, email', via: 'web', idempotencyKey: null, questionFingerprint: 'gone', questionTitle: 'Ask Mara how to write the hours', questionText: '24-hour or am/pm?' }] },
+    },
+  },
+};
+
+export const specs = { 'kitchen-sink': { ...kitchenSink, archives: { '2025-12-01': archiveShape } }, 'all-pending': allPending, 'archive-shape': archiveShape, questions };

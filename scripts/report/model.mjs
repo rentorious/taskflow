@@ -208,11 +208,18 @@ export function buildTaskDetail(raw, id) {
 // Model
 // ---------------------------------------------------------------------------
 
-export function buildModel(raw, { ticks = { items: {} }, enrichment = null, now = Date.now() } = {}) {
+/**
+ * @param {object} raw  RawCycle
+ * @param {object} [context]
+ * @param {{items: object, problems?: object[]}} [context.human]  one record per inbox item id, from a HumanStore's load()
+ * @param {object} [context.ticks]  the older name for `human`, still accepted
+ */
+export function buildModel(raw, { human = null, ticks = null, enrichment = null, now = Date.now() } = {}) {
+  ticks = human ?? ticks ?? { items: {} };
   const index = raw.index ?? {};
   const indexTasks = index.tasks ?? {};
   const indexBatches = index.batches ?? {};
-  const problems = [...(raw.problems ?? [])];
+  const problems = [...(raw.problems ?? []), ...(ticks.problems ?? [])];
   const problem = (code, subject, message) => problems.push({ code, subject, message, since: null, usingLastGood: false });
 
   const tasks = {};

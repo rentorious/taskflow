@@ -62,13 +62,32 @@ export function itemId(kind, subjectId, key) {
   return `${kind}:${subjectId}:${key}`;
 }
 
-/** open | waiting | handled | changed, from the item and its stored tick. */
+/** What came back on a question, newest last. Rendered here so the page never sees raw markdown. */
+function answersOf(record) {
+  return (Array.isArray(record?.answers) ? record.answers : []).map((a) => ({
+    id: a.id ?? null,
+    at: a.at ?? null,
+    body: String(a.body ?? ''),
+    bodyHtml: renderMarkdown(String(a.body ?? '')).html,
+    source: a.source || null,
+    via: a.via ?? 'web',
+    // The wording it was given for, when the question has been reworded since.
+    askedAs: a.questionTitle ?? null,
+    questionFingerprint: a.questionFingerprint ?? null,
+  }));
+}
+
+/** open | waiting | handled | changed, from the item and what the developer recorded on it. */
 export function resolveState(item, tick) {
+  const answers = item.kind === 'question' ? answersOf(tick) : null;
+  // `answer` is the one that settles the question; a reopened question keeps its history only.
+  const extra = answers ? { answers, answer: tick?.resolution === 'answered' ? answers.at(-1) ?? null : null } : {};
+
   if (!item.tickable || !tick || !tick.resolution) {
     const alreadyDelivered = item.kind === 'question' && item.delivered && item.delivered !== 'none';
-    return { state: alreadyDelivered ? 'waiting' : 'open', resolution: null, resolvedAt: null, userNote: null };
+    return { state: alreadyDelivered ? 'waiting' : 'open', resolution: null, resolvedAt: null, userNote: null, ...extra };
   }
-  const base = { resolution: tick.resolution, resolvedAt: tick.at ?? null, userNote: tick.note || null };
+  const base = { resolution: tick.resolution, resolvedAt: tick.at ?? null, userNote: tick.note || null, ...extra };
   // Re-triage reworded the item after it was ticked: say so rather than
   // silently unticking it (constant churn) or silently keeping it (stale).
   if (tick.fingerprint && tick.fingerprint !== item.fingerprint) return { state: 'changed', ...base };
