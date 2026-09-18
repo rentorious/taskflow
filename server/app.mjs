@@ -1,22 +1,37 @@
 // The hosted dashboard: many projects, each developer's cycles under their own path.
 //
 //   /api/health                      name and version, nothing else
+//   /                                sign in, or the list of your projects
+//   /auth/github, /auth/callback     GitHub sign-in;  POST /auth/logout
+//   /settings                        your CLI tokens; members and projects, if you manage any
+//   /api/me                          who a session or a token belongs to
 //   /p/<project>/u/<login>/...       the report (scripts/report/handler.mjs), mounted
 //
 // The page's URLs are all relative, so the unchanged client works under that
 // prefix. Tenancy is in the path and nowhere else: a request is resolved to one
-// project and one owner, and the handler it reaches was built over a backend that
-// can address only those two.
+// project and one owner, the asker's role IN THAT PROJECT is looked up, and the
+// handler it reaches was built over a backend that can address only those two.
 
+import { readFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { HttpError, baseHeaders, createReportHandler, sendError, sendJson } from '../scripts/report/handler.mjs';
-import { ACTIONS, authorize } from './authorize.mjs';
+import { createAccounts } from './accounts.mjs';
+import { createAuth, createRateLimiter, safeNext } from './auth.mjs';
+import { ACTIONS, createAuthorizer } from './authorize.mjs';
 import { createPgBackend } from './backend-pg.mjs';
+import { ACCOUNT_CSP, homePage, messagePage, notInvitedPage, settingsPage, signInPage } from './pages.mjs';
 
+const HERE = dirname(fileURLToPath(import.meta.url));
+const FONTS_DIR = join(HERE, '..', 'scripts', 'report', 'ui', 'fonts');
 const PROJECT_KEY = /^[a-z0-9][a-z0-9-]{1,38}$/;
 const LOGIN = /^[A-Za-z0-9][A-Za-z0-9-]{0,38}$/;
 const MOUNT = /^\/p\/([^/]+)\/u\/([^/]+)(\/.*)?$/;
+const FONT = /^\/assets\/fonts\/([a-z0-9-]+\.woff2)$/;
 const IDLE_MS = 10 * 60 * 1000;
+const MAX_FORM_BYTES = 8 * 1024;
+const HEALTHCHECK_HOST = 'healthcheck.railway.app'; // Railway's deploy check arrives under this name
 
 // One answer for "no such project", "no such developer in it" and "not yours to see": which of them it is stays private.
 const notFound = () => new HttpError(404, 'Not found.');
@@ -25,25 +40,33 @@ const notFound = () => new HttpError(404, 'Not found.');
  * @param {object} options
  * @param {object} options.db
  * @param {URL|string} options.publicUrl  the origin people open; Host and Origin are checked against it
- * @param {(req: import('node:http').IncomingMessage) => Promise<{id: string, login: string}|null>} [options.resolveActor]
- *   who is asking. Sessions and tokens will answer this; until they exist nobody is signed in.
- * @param {boolean} [options.readOnly]  tell the page to hide its write controls
+ * @param {object|null} [options.auth]    from config.mjs; null means no sign-in exists (loopback, read-only)
+ * @param {object} [options.github]       OAuth endpoints, for tests
+ * @param {Function} [options.resolveActor]  without sign-in only: a test's stand-in for it
+ * @param {boolean} [options.readOnly]    without sign-in only: tell the page to hide its write controls
  */
-export function createHostedApp({ db, publicUrl, version = 'dev', resolveActor = async () => null, readOnly = true }) {
+export function createHostedApp({ db, publicUrl, version = 'dev', auth: authConfig = null, github, trustProxy = false, resolveActor = async () => null, readOnly = true }) {
   const home = new URL(publicUrl);
   const allowedHost = home.host.toLowerCase();
-  const mounted = new Map(); // "<project>:<owner id>" -> { handler, usedAt }
+  const signInRequired = Boolean(authConfig);
+  const authorize = createAuthorizer({ signInRequired });
+  const accounts = createAccounts(db, { admins: authConfig?.admins ?? [] });
+  const auth = signInRequired ? createAuth({ db, accounts, publicUrl: home, config: authConfig, ...(github ? { github } : {}) }) : null;
+  const signInFailures = createRateLimiter({ windowMs: 10 * 60 * 1000, max: 10 });
+  const badTokens = createRateLimiter({ windowMs: 10 * 60 * 1000, max: 20 });
+  const mounted = new Map(); // "<project>:<owner id>" -> { ready, usedAt }
 
-  async function handlerFor(projectId, ownerId) {
+  function handlerFor(projectId, ownerId) {
     const key = `${projectId}:${ownerId}`;
     if (!mounted.has(key)) {
       mounted.set(key, {
         usedAt: Date.now(),
         ready: createReportHandler({
-          backend: createPgBackend(db, { projectId, ownerId, readOnly }),
-          // Cookies will ride on these writes, so the page's own origin is the only one accepted, and it must be stated.
-          security: { originAllowed: (origin) => origin === home.origin },
-          canWrite: (actor) => authorize(actor, ACTIONS.WRITE_HUMAN),
+          // With sign-in, whether someone may write is a fact about them (api/me), not about the cycle.
+          backend: createPgBackend(db, { projectId, ownerId, readOnly: signInRequired ? false : readOnly }),
+          // Cookies ride on these writes, so the page's own origin is the only one accepted, and it must be stated.
+          security: { originAllowed: (_origin, req) => fromOurPages(req) },
+          canWrite: (actor) => authorize(actor, ACTIONS.WRITE_HUMAN, { ownsCycle: String(actor?.id) === String(ownerId) }),
         }),
       });
     }
@@ -62,9 +85,152 @@ export function createHostedApp({ db, publicUrl, version = 'dev', resolveActor =
   }, 60 * 1000);
   sweeper.unref();
 
-  async function route(req, res) {
-    if ((req.headers.host ?? '').toLowerCase() !== allowedHost) throw new HttpError(403, 'Unexpected Host header.');
+  // -- small helpers ------------------------------------------------------------------
 
+  /**
+   * CSRF: cookies ride on every write, so a write must come from a page of ours. Its Origin says so.
+   * A browser withholds Origin ("null") from a same-origin form post when the page's referrer policy is
+   * no-referrer; it then still sends Sec-Fetch-Site, which page script cannot set or forge.
+   */
+  function fromOurPages(req) {
+    const origin = req.headers.origin;
+    if (origin === home.origin) return true;
+    return (origin === undefined || origin === 'null') && req.headers['sec-fetch-site'] === 'same-origin';
+  }
+
+  const clientAddress = (req) => (trustProxy && req.headers['x-forwarded-for'] ? String(req.headers['x-forwarded-for']).split(',').at(-1).trim() : req.socket.remoteAddress ?? 'unknown');
+
+  function sendPage(res, status, page) {
+    // same-origin, not no-referrer: these pages post forms, and a browser only states their Origin under this policy.
+    res.writeHead(status, baseHeaders({ 'Content-Type': 'text/html; charset=utf-8', 'Content-Security-Policy': ACCOUNT_CSP, 'Referrer-Policy': 'same-origin' }));
+    res.end(page);
+  }
+  function redirect(res, status, location) {
+    res.writeHead(status, baseHeaders({ Location: location }));
+    res.end();
+  }
+
+  /** A form post from one of our own pages, and nowhere else. */
+  async function readForm(req) {
+    if (!fromOurPages(req)) throw new HttpError(403, 'Cross-origin requests are not allowed.');
+    if (!/^application\/x-www-form-urlencoded\b/i.test(req.headers['content-type'] ?? '')) throw new HttpError(415, 'Send a form.');
+    const chunks = [];
+    let size = 0;
+    for await (const chunk of req) {
+      size += chunk.length;
+      if (size > MAX_FORM_BYTES) throw new HttpError(413, 'Request body too large.');
+      chunks.push(chunk);
+    }
+    return new URLSearchParams(Buffer.concat(chunks).toString('utf8'));
+  }
+
+  async function settingsView(actor, extra = {}) {
+    const projects = await accounts.projectsFor(actor);
+    const managed = [];
+    for (const project of projects) {
+      if (authorize({ ...actor, role: project.role }, ACTIONS.MANAGE_MEMBERS)) managed.push({ id: project.id, name: project.name, ...(await accounts.members(project.id)) });
+    }
+    const developerSomewhere = projects.some((p) => p.role === 'admin' || p.role === 'developer');
+    const canHoldTokens = authorize(actor, ACTIONS.MANAGE_TOKENS, { developerSomewhere });
+    return settingsPage({
+      user: actor, managed, canHoldTokens, serverUrl: home.origin,
+      tokens: canHoldTokens ? await accounts.tokens(actor) : [],
+      canCreateProject: authorize(actor, ACTIONS.CREATE_PROJECT),
+      ...extra,
+    });
+  }
+
+  // -- routes that exist only with sign-in ------------------------------------------------
+
+  async function accountRoutes(req, res, path, url, actor) {
+    const get = req.method === 'GET' || req.method === 'HEAD';
+
+    if (path === '/assets/account.css' && get) {
+      res.writeHead(200, baseHeaders({ 'Content-Type': 'text/css; charset=utf-8', 'Cache-Control': 'public, max-age=3600' }));
+      return res.end(await readFile(join(HERE, 'assets', 'account.css')));
+    }
+    const font = FONT.exec(path);
+    if (font && get) {
+      const body = await readFile(join(FONTS_DIR, font[1])).catch(() => null);
+      if (!body) throw notFound();
+      res.writeHead(200, baseHeaders({ 'Content-Type': 'font/woff2', 'Cache-Control': 'public, max-age=86400' }));
+      return res.end(body);
+    }
+
+    if (path === '/auth/github' && get) {
+      if (signInFailures.blocked(clientAddress(req))) throw new HttpError(429, 'Too many failed sign-ins from this address. Try again in a few minutes.');
+      return auth.start(req, res, url);
+    }
+    if (path === '/auth/callback' && get) {
+      const address = clientAddress(req);
+      if (signInFailures.blocked(address)) throw new HttpError(429, 'Too many failed sign-ins from this address. Try again in a few minutes.');
+      const result = await auth.callback(req, res, url);
+      if (result.ok) return redirect(res, 303, result.next);
+      signInFailures.fail(address);
+      if (result.reason === 'not-invited') return sendPage(res, 403, notInvitedPage({ login: result.login }));
+      return sendPage(res, result.reason === 'github' ? 502 : 400, signInPage({ notice: result.reason === 'github' ? 'GitHub did not answer as expected. Try again.' : 'That sign-in attempt had expired or was not started here. Try again.' }));
+    }
+    if (path === '/auth/logout' && req.method === 'POST') {
+      // A page of ours, stating so. The dashboard posts with fetch(), the account pages with a form.
+      if (!fromOurPages(req)) throw new HttpError(403, 'Cross-origin requests are not allowed.');
+      await auth.logout(req, res);
+      return redirect(res, 303, '/');
+    }
+
+    if (path === '/' && get) {
+      if (!actor) return sendPage(res, 200, signInPage({ next: safeNext(url.searchParams.get('next')) }));
+      return sendPage(res, 200, homePage({ user: actor, projects: await accounts.projectsFor(actor) }));
+    }
+    if (path === '/api/me' && get) {
+      if (!actor) throw new HttpError(401, 'Sign in.');
+      return sendJson(res, 200, { login: actor.login, name: actor.name, isInstanceAdmin: actor.isInstanceAdmin, via: actor.via, projects: await accounts.projectsFor(actor) });
+    }
+
+    if (!path.startsWith('/settings')) return false;
+    // Settings are for a person at a browser. A CLI token must not be able to mint more tokens or invite anyone.
+    if (!actor || actor.via !== 'session') {
+      if (!get) throw new HttpError(401, 'Sign in.');
+      return redirect(res, 302, '/?next=/settings');
+    }
+    if (path === '/settings' && get) return sendPage(res, 200, await settingsView(actor));
+    if (req.method !== 'POST') throw new HttpError(405, 'Method not allowed.');
+
+    const form = await readForm(req);
+    try {
+      if (path === '/settings/tokens') {
+        const projects = await accounts.projectsFor(actor);
+        if (!authorize(actor, ACTIONS.MANAGE_TOKENS, { developerSomewhere: projects.some((p) => p.role !== 'answerer') })) throw new HttpError(403, 'Your role holds no CLI token.');
+        const made = await accounts.createToken(actor, form.get('label'));
+        // Rendered, never redirected to: a token must not end up in a URL or in history.
+        return sendPage(res, 200, await settingsView(actor, { newToken: made.token }));
+      }
+      if (path === '/settings/tokens/revoke') await accounts.revokeToken(actor, form.get('id'));
+      else if (path === '/settings/projects') {
+        if (!authorize(actor, ACTIONS.CREATE_PROJECT)) throw new HttpError(403, 'Only an instance admin creates projects.');
+        await accounts.createProject(actor, { id: form.get('id'), name: form.get('name') });
+      } else {
+        const projectId = form.get('project') ?? '';
+        const role = PROJECT_KEY.test(projectId) ? await accounts.roleIn(projectId, actor.id) : null;
+        const exists = PROJECT_KEY.test(projectId) && (role || actor.isInstanceAdmin) && (await db.query('select 1 from project where id = $1', [projectId])).rowCount > 0;
+        if (!exists) throw notFound();
+        if (!authorize({ ...actor, role }, ACTIONS.MANAGE_MEMBERS)) throw new HttpError(403, 'Only a project admin manages its members.');
+        if (path === '/settings/members/invite') await accounts.invite(actor, projectId, { login: form.get('login'), role: form.get('role') });
+        else if (path === '/settings/members/role') await accounts.setRole(actor, projectId, form.get('user'), form.get('role'));
+        else if (path === '/settings/members/remove') await accounts.removeMember(actor, projectId, form.get('user'));
+        else if (path === '/settings/invites/remove') await accounts.removeInvite(actor, projectId, form.get('login'));
+        else throw notFound();
+      }
+    } catch (error) {
+      // What a person typed wrong comes back on the page they typed it into.
+      if (error.status === 400 || error.status === 409) return sendPage(res, error.status, await settingsView(actor, { error: error.message }));
+      throw error;
+    }
+    return redirect(res, 303, '/settings');
+  }
+
+  // -- routing ------------------------------------------------------------------------
+
+  async function route(req, res) {
     const url = new URL(req.url, home);
     let path;
     try {
@@ -74,11 +240,39 @@ export function createHostedApp({ db, publicUrl, version = 'dev', resolveActor =
       throw new HttpError(400, 'Malformed path.');
     }
 
-    if (path === '/api/health' && (req.method === 'GET' || req.method === 'HEAD')) return sendJson(res, 200, { ok: true, name: 'taskflow', version });
+    const host = (req.headers.host ?? '').toLowerCase();
+    const health = path === '/api/health' && (req.method === 'GET' || req.method === 'HEAD');
+    if (host !== allowedHost && !(health && host === HEALTHCHECK_HOST)) throw new HttpError(403, 'Unexpected Host header.');
+    if (health) return sendJson(res, 200, { ok: true, name: 'taskflow', version });
+    if (authConfig?.secureCookies) res.setHeader('Strict-Transport-Security', 'max-age=31536000');
+
+    let actor = null;
+    if (signInRequired) {
+      const address = clientAddress(req);
+      if (req.headers.authorization && badTokens.blocked(address)) throw new HttpError(429, 'Too many bad tokens from this address. Try again in a few minutes.');
+      const resolved = await auth.resolve(req, res);
+      if (resolved.badToken) { badTokens.fail(address); throw new HttpError(401, 'That token is not valid. Create a new one in Settings.'); }
+      actor = resolved.actor;
+      const handled = await accountRoutes(req, res, path, url, actor);
+      if (handled !== false) return handled;
+    } else {
+      const who = await resolveActor(req);
+      if (who) actor = { id: String(who.id), login: who.login, isInstanceAdmin: false, via: 'session' };
+    }
 
     const match = MOUNT.exec(path);
     if (!match || !PROJECT_KEY.test(match[1]) || !LOGIN.test(match[2])) throw notFound();
     const [, projectKey, login, rest] = match;
+
+    if (signInRequired && !actor) {
+      // The page itself sends a person to sign in and back; everything else just says so.
+      if ((rest === '/' || !rest) && req.method === 'GET') return redirect(res, 302, `/?next=${encodeURIComponent(`/p/${projectKey}/u/${login}/`)}`);
+      throw new HttpError(401, 'Sign in.');
+    }
+
+    if (actor) actor = { ...actor, role: await accounts.roleIn(projectKey, actor.id) };
+    // No role here: the project does not exist, as far as this person is concerned.
+    if (signInRequired && !actor.role) throw notFound();
 
     const owner = (await db.query(
       `select u.id, u.login from app_user u join membership m on m.user_id = u.id
@@ -86,19 +280,26 @@ export function createHostedApp({ db, publicUrl, version = 'dev', resolveActor =
       [projectKey, login],
     )).rows[0];
     if (!owner) throw notFound();
-
-    const who = await resolveActor(req);
-    let actor = null;
-    if (who) {
-      const member = (await db.query('select role from membership where project_id = $1 and user_id = $2', [projectKey, who.id])).rows[0];
-      actor = { id: who.id, login: who.login, role: member?.role ?? null };
+    if (!authorize(actor, ACTIONS.READ)) {
+      const message = 'Your role in this project is to answer questions. That view is not built yet.';
+      if (rest === '/' && req.method === 'GET') return sendPage(res, 403, messagePage({ title: 'Nothing to show yet', message, user: actor }));
+      throw new HttpError(403, message);
     }
-    if (!authorize(actor, ACTIONS.READ)) throw notFound();
 
     if (!rest) {
       // Relative URLs resolve against the last slash. Built from the checked parts, never from what was sent.
-      res.writeHead(308, baseHeaders({ Location: `/p/${projectKey}/u/${owner.login}/` }));
-      return res.end();
+      return redirect(res, 308, `/p/${projectKey}/u/${owner.login}/`);
+    }
+    const ownsCycle = String(actor?.id) === String(owner.id);
+    if (rest === '/api/me' && req.method === 'GET') {
+      return sendJson(res, 200, {
+        signedIn: signInRequired,
+        login: actor?.login ?? null,
+        role: actor?.role ?? null,
+        owner: owner.login,
+        ownsCycle,
+        canWrite: authorize(actor, ACTIONS.WRITE_HUMAN, { ownsCycle }),
+      });
     }
     const handler = await handlerFor(projectKey, owner.id);
     return handler.handle(req, res, { path: rest, url, actor });
@@ -110,6 +311,7 @@ export function createHostedApp({ db, publicUrl, version = 'dev', resolveActor =
 
   return {
     server,
+    accounts,
     listen: ({ host, port }) => new Promise((resolveListen, reject) => {
       server.once('error', reject);
       server.listen(port, host, () => { server.removeAllListeners('error'); resolveListen(server.address().port); });

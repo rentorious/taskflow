@@ -404,6 +404,11 @@ above, the amendment wins.
 | A7 | D21 | An unaccepted answer never stamps `question_state`; accepting it does. "Newest answer" means newest accepted | A question's state is derived from the recorded resolution alone, so a stamped but hidden answer would open the gate |
 | A8 | One-time import (not covered above) | First wins per question: a question that already has a row on the server is skipped and listed; the rest is imported; re-running is a no-op. The live cycle's tick file is imported too | Never merges within a question, and does not strand a second developer's local answers |
 | A9 | D14: "The 63 tests" | 134 at the start of Phase 1 | — |
+| A10 | HTTP surface: JSON routes for tokens, projects and members | Server-rendered, script-free pages under `/settings` that post plain forms (`form-action 'self'` on those pages only; the dashboard keeps `'none'`). `GET /api/me` answers for a session or a token | The only client of those routes would have been a page written here anyway. No script means nothing to inject into |
+| A11 | "CSRF Origin check reads `PUBLIC_URL`" | A write must carry the page's own `Origin`, or, when the browser withheld it, `Sec-Fetch-Site: same-origin` | Chromium sends `Origin: null` on a same-origin form post under `Referrer-Policy: no-referrer`. Fetch metadata is set by the browser and cannot be forged by page script. Found in a real browser, not by the HTTP tests |
+| A12 | D17, D21: the answerer | The role, invites for it and the proposal rule in the store exist. The answerer's view and the accept action stay in Phase 2, as the phase list above already says. Until then an answerer who signs in is told so | Nothing in Phase 1 can create a proposal |
+| A13 | D17: who writes where | You write on your own cycle, in a browser. A teammate's cycle is read-only ("cycle switcher … a teammate's, read-only"). A CLI token reads, and will push and claim; it never records an answer | An answer must come from a person looking at the question |
+| A14 | D10: instance admins | They create projects and become admin of what they create. Being an instance admin opens no project they were not added to | Ticket text is confidential per project |
 
 ### Phase 1 as sliced
 
@@ -416,5 +421,6 @@ above, the amendment wins.
 5. **1e** — the phone layout.
 6. **1f** — Railway template, continuous integration, documentation for other teams.
 
-With no sign-in yet, 1a's server starts only when `PUBLIC_URL` is a loopback origin. The rule is
-"no authentication configured, so require loopback", which 1b lifts by configuring authentication.
+Without sign-in configured the server starts only when `PUBLIC_URL` is a loopback origin, read-only.
+The rule is "no authentication configured, so require loopback"; setting the four sign-in variables
+lifts it (1b, done). 1a and 1b are built; see `server/`.

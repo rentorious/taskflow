@@ -1,24 +1,58 @@
-// The one place that decides who may do what to a project.
+// The one place that decides who may do what.
 //
-// Every data route asks here before it touches anything, so the rules can change
-// without hunting for call sites. An actor is { id, login, role }, where `role`
-// is that person's membership of THIS project, or null when they have none.
+// An actor is { id, login, isInstanceAdmin, via, role }: `via` is "session" or
+// "token", and `role` is that person's membership of THE PROJECT BEING ASKED ABOUT,
+// or null. Whoever calls this has already looked that up; nothing here touches
+// the database, so the whole policy can be read on one screen.
 //
-// Today there is no sign-in: the server only starts on a loopback address (see
-// config.mjs), so whoever reaches it is the developer at their own machine. Reads
-// are therefore open, and writes need an actor, which only tests supply.
+// A person with no role in a project is answered 404 by the caller, never 403: that
+// a project exists is not theirs to learn. 403 is for members whose role falls short.
 
-export const ACTIONS = Object.freeze({ READ: 'project.read', WRITE_HUMAN: 'human.write' });
+export const ACTIONS = Object.freeze({
+  READ: 'project.read',              // a developer's cycle: lanes, plans, screenshots, questions
+  WRITE_HUMAN: 'human.write',        // answer, mark sent, drop, tick
+  MANAGE_MEMBERS: 'project.members', // invite, change a role, remove
+  CREATE_PROJECT: 'project.create',
+  MANAGE_TOKENS: 'tokens.manage',    // one's own CLI tokens
+});
 
-const WRITERS = new Set(['admin', 'developer', 'answerer']);
+const SEES_THE_BOARD = new Set(['admin', 'developer']);
 
 /**
- * @param {{id: string, login: string, role: string|null}|null} actor
- * @param {string} action  one of ACTIONS
- * @returns {boolean}
+ * @param {boolean} signInRequired  false only when the server runs on loopback with no sign-in
+ *   configured: then whoever reaches it is the developer at their own machine.
  */
-export function authorize(actor, action) {
-  if (action === ACTIONS.READ) return true;
-  if (action === ACTIONS.WRITE_HUMAN) return Boolean(actor && WRITERS.has(actor.role));
-  return false;
+export function createAuthorizer({ signInRequired }) {
+  /**
+   * @param {object|null} actor
+   * @param {string} action
+   * @param {{ownsCycle?: boolean, developerSomewhere?: boolean}} [context]
+   */
+  return function authorize(actor, action, context = {}) {
+    if (!signInRequired) {
+      if (action === ACTIONS.READ) return true;
+      // Nobody can be signed in. Only tests supply an actor, to exercise the write path.
+      if (action === ACTIONS.WRITE_HUMAN) return Boolean(actor?.role);
+      return false;
+    }
+
+    if (!actor) return false;
+    switch (action) {
+      case ACTIONS.READ:
+        return SEES_THE_BOARD.has(actor.role);
+      case ACTIONS.WRITE_HUMAN:
+        // In the browser, on your own cycle. A teammate's cycle is read-only, and a CLI token never
+        // records what a person said: an answer must come from someone looking at the question.
+        return actor.via === 'session' && SEES_THE_BOARD.has(actor.role) && context.ownsCycle === true;
+      case ACTIONS.MANAGE_MEMBERS:
+        return actor.via === 'session' && (actor.role === 'admin' || actor.isInstanceAdmin === true);
+      case ACTIONS.CREATE_PROJECT:
+        return actor.via === 'session' && actor.isInstanceAdmin === true;
+      case ACTIONS.MANAGE_TOKENS:
+        // Answerers hold no token: a token exists to push and claim.
+        return actor.via === 'session' && (actor.isInstanceAdmin === true || context.developerSomewhere === true);
+      default:
+        return false;
+    }
+  };
 }

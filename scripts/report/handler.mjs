@@ -78,7 +78,7 @@ async function buildStaticMap() {
 /**
  * @param {object} options
  * @param {object} options.backend   see backend-files.mjs for the shape
- * @param {{originAllowed?: (origin: string|undefined) => boolean}} [options.security]
+ * @param {{originAllowed?: (origin: string|undefined, req: object) => boolean}} [options.security]
  * @param {(actor: object|null, cycle: object) => boolean} [options.canWrite]  asked before a write body is read
  * @param {boolean} [options.legacyStatus]  serve the pre-rework /api/status, which returns the raw index
  */
@@ -175,7 +175,7 @@ export async function createReportHandler({ backend, security = {}, canWrite = (
   /** Every write route: JSON only, same origin only (CSRF), never on an archive. Returns the item it is about. */
   async function openWrite(req, ctx, cycleId) {
     if (!/^application\/json\b/i.test(req.headers['content-type'] ?? '')) throw new HttpError(415, 'Send application/json.');
-    if (!originAllowed(req.headers.origin)) throw new HttpError(403, 'Cross-origin writes are not allowed.');
+    if (!originAllowed(req.headers.origin, req)) throw new HttpError(403, 'Cross-origin writes are not allowed.');
 
     const { cycle } = await getCycle(cycleId);
     if (!canWrite(ctx.actor ?? null, cycle)) throw new HttpError(403, 'You cannot change anything here.');

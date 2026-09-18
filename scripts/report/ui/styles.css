@@ -140,6 +140,8 @@ input::placeholder { color: var(--ink-3); }
 .cycle-line { color: var(--ink-2); flex: 1 1 18rem; min-width: 0; }
 .topbar-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; }
 
+.account { display: inline-flex; align-items: center; gap: 0.5rem; font-size: var(--fs-0); }
+.account[hidden] { display: none; }
 .live { display: inline-flex; align-items: center; gap: 0.4rem; color: var(--ink-2); font-size: var(--fs-0); }
 .live::before { content: ''; width: 0.5rem; height: 0.5rem; border-radius: 50%; background: var(--ink-3); }
 .live[data-state='live']::before { background: var(--live); box-shadow: 0 0 0 2px var(--ink-2); }

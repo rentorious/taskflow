@@ -12,6 +12,7 @@ const SNAPSHOT = embedded ? JSON.parse(embedded.textContent) : null;
 
 const state = {
   model: null,
+  me: null, // hosted only: { login, role, owner, ownsCycle, canWrite }
   cycles: [],
   cycle: 'live',
   sel: null, // {type: 'batch'|'task'|'item', id}
@@ -200,8 +201,18 @@ const isTrouble = (b) => ['stale-lock', 'orphaned', 'dep-stale', 'dep-missing', 
 
 const withCycle = (path) => (state.cycle === 'live' ? path : `${path}${path.includes('?') ? '&' : '?'}cycle=${encodeURIComponent(state.cycle)}`);
 
+// A hosted page is mounted under a project path and needs a session. When that session is gone,
+// the only useful thing left to do is to sign in again and come back here.
+const MOUNTED = !SNAPSHOT && /^\/p\//.test(location.pathname);
+function signInAgain(res) {
+  if (res.status !== 401 || !MOUNTED) return false;
+  location.href = `/?next=${encodeURIComponent(location.pathname)}`;
+  return true;
+}
+
 async function getJson(path) {
   const res = await fetch(withCycle(path), { cache: 'no-store' });
+  if (signInAgain(res)) return new Promise(() => {}); // the page is leaving
   if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || `Request failed (${res.status})`);
   return res.json();
 }
@@ -345,7 +356,9 @@ const copyButton = (label, text, done, cls = 'btn') =>
 // Inbox
 // ---------------------------------------------------------------------------
 
-const canTick = () => !SNAPSHOT && !state.model.cycle.readOnly;
+// On a hosted page, whether this person may write is a fact about them (their role, whose cycle this is),
+// and the server is the one that knows. It enforces it too; this only decides which controls to draw.
+const canTick = () => !SNAPSHOT && !state.model.cycle.readOnly && (state.me ? state.me.canWrite === true : true);
 
 /** POST one change to an inbox item. Returns true when it was saved. Always reloads the model. */
 async function post(path, payload, done) {
@@ -353,7 +366,8 @@ async function post(path, payload, done) {
   try {
     const res = await fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
     ok = res.ok;
-    if (res.status === 403) toast('This cycle is archived. Nothing can be changed here.');
+    if (signInAgain(res)) return false;
+    if (res.status === 403 && state.model.cycle.isArchive) toast('This cycle is archived. Nothing can be changed here.');
     else if (!res.ok) toast((await res.json().catch(() => ({}))).error || (res.status === 409 ? 'That item changed. Reloaded it.' : 'Could not save that.'), 3200);
     else toast(done);
   } catch {
@@ -368,7 +382,8 @@ const tick = (item, resolution, note = '') =>
 
 // -- answers -----------------------------------------------------------------
 
-const DRAFTS_KEY = 'taskflow-drafts';
+// One origin can host many projects. A draft belongs to the page it was typed on.
+const DRAFTS_KEY = MOUNTED ? `taskflow-drafts:${location.pathname}` : 'taskflow-drafts';
 const newKey = () => (crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`);
 
 // Drafts outlive a reload: a phone evicts background tabs mid-sentence. Not in a
@@ -1212,6 +1227,26 @@ window.addEventListener('hashchange', () => {
   if (state.model) render();
 });
 
+/** Hosted only: who is looking, and whether they may write here. */
+async function loadViewer() {
+  try {
+    const me = await getJson('api/me');
+    state.me = me;
+    if (me.signedIn) {
+      $('account').hidden = false;
+      $('account-home').textContent = me.login ?? 'Projects';
+      $('account-home').title = me.ownsCycle ? 'Your projects' : `You are looking at ${me.owner}'s cycle, read-only. Your projects`;
+      $('sign-out').onclick = async () => {
+        await fetch('/auth/logout', { method: 'POST' }).catch(() => {});
+        location.href = '/';
+      };
+    }
+    render();
+  } catch {
+    // Without it the page stays as the model describes it; the server still decides every write.
+  }
+}
+
 async function boot() {
   readHash();
   loadDrafts();
@@ -1222,6 +1257,7 @@ async function boot() {
     if (!SNAPSHOT) state.cycles = (await fetch('api/cycles', { cache: 'no-store' }).then((r) => r.json())).cycles;
     if (!SNAPSHOT && !state.cycles.some((c) => c.id === state.cycle)) state.cycle = 'live';
     await loadModel();
+    if (state.model.cycle.hosted) await loadViewer();
     markCurrent(true);
     connect();
   } catch (error) {

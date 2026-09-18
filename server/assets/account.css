@@ -1,0 +1,56 @@
+/* The pages around the dashboard: sign-in, the project list, settings. Same ink and
+ * ground as the report, one column, built for a phone first. No script anywhere. */
+
+@font-face { font-family: 'Atkinson Next'; src: url('fonts/atkinson-hyperlegible-next.woff2') format('woff2'); font-weight: 200 800; font-display: swap; }
+@font-face { font-family: 'Atkinson Mono'; src: url('fonts/atkinson-hyperlegible-mono.woff2') format('woff2'); font-weight: 200 800; font-display: swap; }
+@font-face { font-family: 'Big Shoulders'; src: url('fonts/big-shoulders-display.woff2') format('woff2'); font-weight: 100 900; font-display: swap; }
+
+:root {
+  color-scheme: light dark;
+  --ground: #dce2e3; --strip: #f8faf9; --ink: #16222c; --ink-2: #4a5963; --rule: #c0cacd;
+  --mark: #f2b705; --mark-ink: #16222c; --trouble: #c8324b; --focus: #1f5fd0;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --ground: #151c1e; --strip: #212b2e; --ink: #e8eeec; --ink-2: #a9b6b4; --rule: #3b4a4e; --trouble: #ff7a90; --focus: #8fb9ff; }
+}
+
+*, *::before, *::after { box-sizing: border-box; }
+body {
+  margin: 0; min-height: 100dvh; background: var(--ground); color: var(--ink);
+  font: 1.0625rem/1.5 'Atkinson Next', 'Segoe UI', system-ui, sans-serif;
+  padding: max(1rem, env(safe-area-inset-top)) max(1rem, env(safe-area-inset-right)) max(2rem, env(safe-area-inset-bottom)) max(1rem, env(safe-area-inset-left));
+}
+main { max-width: 40rem; margin: 0 auto; }
+header.top { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.25rem 1rem; margin-bottom: 1.5rem; }
+header.top nav { margin-left: auto; display: flex; flex-wrap: wrap; align-items: center; gap: 0.25rem 1rem; }
+.wordmark { margin: 0; font: 600 2.125rem/1 'Big Shoulders', 'Arial Narrow', sans-serif; letter-spacing: 0.01em; }
+.wordmark a { color: inherit; text-decoration: none; }
+h2 { font: 600 1.5rem/1.15 'Big Shoulders', 'Arial Narrow', sans-serif; margin: 2rem 0 0.5rem; }
+h3 { font-size: 1.0625rem; margin: 0 0 0.25rem; }
+p { margin: 0 0 0.75rem; }
+.quiet { color: var(--ink-2); font-size: 0.9375rem; }
+a { color: inherit; text-underline-offset: 0.15em; }
+code, .mono { font-family: 'Atkinson Mono', ui-monospace, monospace; font-size: 0.9375rem; overflow-wrap: anywhere; }
+
+.card { background: var(--strip); border: 1px solid var(--rule); padding: 1rem; margin: 0 0 0.75rem; }
+.card > :last-child { margin-bottom: 0; }
+.card.mark { border-left: 0.375rem solid var(--mark); }
+.card.trouble { border-left: 0.375rem solid var(--trouble); }
+ul.plain { list-style: none; margin: 0; padding: 0; }
+ul.plain > li { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem 0.75rem; padding: 0.5rem 0; border-top: 1px solid var(--rule); }
+ul.plain > li:first-child { border-top: 0; }
+ul.plain .grow { flex: 1 1 12rem; min-width: 0; }
+
+form { margin: 0; }
+form.row { display: flex; flex-wrap: wrap; align-items: end; gap: 0.5rem; }
+label { display: grid; gap: 0.2rem; font-size: 0.9375rem; color: var(--ink-2); flex: 1 1 10rem; }
+input, select, button, .button {
+  font: inherit; font-size: max(16px, 1rem); /* iOS zooms the page on anything smaller */
+  min-height: 2.75rem; padding: 0.4rem 0.75rem; color: var(--ink); background: var(--ground); border: 1px solid var(--ink-2); border-radius: 0;
+}
+input, select { width: 100%; }
+button, .button { cursor: pointer; background: var(--strip); font-weight: 600; text-decoration: none; display: inline-flex; align-items: center; justify-content: center; }
+button.primary, .button.primary { background: var(--mark); color: var(--mark-ink); border-color: var(--mark-ink); }
+button.quiet { background: transparent; border-color: var(--rule); font-weight: 400; min-height: 2.25rem; padding: 0.2rem 0.6rem; font-size: 0.9375rem; color: var(--ink); }
+:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
+.token { display: block; padding: 0.75rem; background: var(--ground); border: 1px dashed var(--ink-2); user-select: all; }
