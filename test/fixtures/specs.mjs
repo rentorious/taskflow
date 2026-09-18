@@ -331,4 +331,54 @@ export const questions = {
   },
 };
 
-export const specs = { 'kitchen-sink': { ...kitchenSink, archives: { '2025-12-01': archiveShape } }, 'all-pending': allPending, 'archive-shape': archiveShape, questions };
+// ---------------------------------------------------------------------------
+// shuffled: ids and names whose order depends on who sorts them. Object keys
+// here are deliberately not alphabetical, one is integer-like, and the
+// attachment names sort differently by locale and by byte value. A store that
+// reorders keys or re-sorts names cannot rebuild the same model from this.
+// `enrichment` is not materialised: tests hand it to the model and the payload.
+// ---------------------------------------------------------------------------
+
+const shTasks = {
+  zz9: task('Hotfix: basket total rounds the wrong way', { id: 'zz9', type: 'bug', priority: 'urgent', batch: 'hotfix-b', needs: [ask('q-rounding', 'Ask Mara which way half pennies round', 'Half a penny: up, down, or to even?')] }),
+  Aa1: task('Hotfix follow-up: show the rounding rule on the receipt', { id: 'Aa1', batch: 'hotfix-A', needs: [] }),
+  b10: task('Bundle page: ten-title bundles', { id: 'b10', batch: 'batch-10', size: 'medium', needs: [] }),
+  b2: task('Bundle page: two-title bundles', { id: 'b2', batch: 'batch-2', needs: [] }),
+  10: task('Bundle page: copy for the banner', { id: '10', type: 'copy-change', batch: 'batch-10', needs: [] }),
+};
+
+export const shuffled = {
+  slug: 'sam',
+  index: {
+    schema_version: 3,
+    last_triage: '2026-03-01',
+    developer: 'Sam Rivera',
+    developer_id: '000001',
+    dev_head: '0a1b2c3d4',
+    tasks: shTasks,
+    batches: {
+      'hotfix-b': { name: 'Basket rounding', tasks: ['zz9'], suggested_branch: 'fix/hotfix-b', depends_on: [] },
+      'hotfix-A': { name: 'Rounding rule on the receipt', tasks: ['Aa1'], suggested_branch: 'feat/hotfix-a', depends_on: ['hotfix-b'] },
+      'batch-10': { name: 'Bundles of ten, and the banner copy', tasks: ['b10', '10'], suggested_branch: 'feat/bundles-ten', depends_on: ['batch-2'] },
+      'batch-2': { name: 'Bundles of two', tasks: ['b2'], suggested_branch: 'feat/bundles-two', depends_on: [] },
+    },
+    suggestions: [],
+  },
+  batchFiles: {
+    'hotfix-b': { status: 'pr-created', branch: 'fix/hotfix-b', pr_url: pr(301), tasks: { zz9: { ...committed(1), pr_url: pr(301) } } },
+    'batch-2': { status: 'pending', branch: null, pr_url: null, tasks: { b2: { status: 'planned', commit_shas: [] } } },
+  },
+  locks: { 'hotfix-b': 3 * HOUR },
+  plans: Object.fromEntries(Object.keys(shTasks).map((id) => [id, plan(shTasks[id].name)])),
+  attachments: { zz9: ['B.png', 'a.png', '10.png'] },
+  summary: { name: 'triage-sam-2026-03-01.md', markdown: '# Triage summary\n\nFive tasks, four batches.\n' },
+  enrichment: {
+    git: 'ok',
+    gh: 'ok',
+    asOf: '2026-03-02T08:00:00.000Z',
+    prs: { [pr(301)]: { state: 'merged', isDraft: false, reviewDecision: 'APPROVED', checks: 'passing', mergedAt: '2026-03-02T07:00:00.000Z', asOf: '2026-03-02T08:00:00.000Z' } },
+    worktrees: [{ path: '/home/sam/worktrees/hotfix-b', branch: 'fix/hotfix-b' }],
+  },
+};
+
+export const specs = { 'kitchen-sink': { ...kitchenSink, archives: { '2025-12-01': archiveShape } }, 'all-pending': allPending, 'archive-shape': archiveShape, questions, shuffled };

@@ -10,7 +10,7 @@
 
 import { execFile } from 'node:child_process';
 
-const PR_URL = /^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/\d+$/;
+export const PR_URL = /^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/\d+$/;
 const OPEN_TTL_MS = 120 * 1000;
 const NEGATIVE_TTL_MS = 10 * 60 * 1000;
 const WORKTREE_TTL_MS = 60 * 1000;

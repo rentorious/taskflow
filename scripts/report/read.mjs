@@ -10,8 +10,8 @@ import { dirname, join, resolve } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 
 const RETRY_DELAYS_MS = [50, 150];
-const MAX_PLAN_BYTES = 1024 * 1024;
-const SAFE_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+export const MAX_PLAN_BYTES = 1024 * 1024;
+export const SAFE_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 
 export const ATTACHMENT_TYPES = {
   png: 'image/png',
