@@ -805,7 +805,7 @@ function renderTop() {
 
   const pick = $('cycle-select');
   pick.closest('label').hidden = Boolean(SNAPSHOT) || state.cycles.length < 2;
-  replace(pick, state.cycles.map((cy) => h('option', { value: cy.id, selected: cy.id === state.cycle }, cy.isArchive ? `Archive ${cy.id}` : 'Current cycle')));
+  replace(pick, state.cycles.map((cy) => h('option', { value: cy.id, selected: cy.id === state.cycle }, cy.isArchive ? `Archive ${cy.label ?? cy.id}` : 'Current cycle')));
 
   $('notes-button').hidden = !c.summaryFile;
 
