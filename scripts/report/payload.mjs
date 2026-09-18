@@ -324,5 +324,8 @@ export function rawFromPayload(payload, { text = () => undefined, has = () => tr
     summaryFile: payload.summary?.file ?? null,
     config: payload.config,
     problems,
+    // Not part of what read.mjs produces: pull request and worktree state as the laptop saw it,
+    // for whoever builds the model to pass on as `enrichment`.
+    enrichment: payload.enrichment ?? null,
   };
 }
