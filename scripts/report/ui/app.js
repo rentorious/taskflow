@@ -274,14 +274,16 @@ function writeHash({ push = false } = {}) {
   const query = params.toString();
   const next = `#${path}${query ? `?${query}` : ''}`;
   if (next === location.hash) return;
-  if (push) history.pushState(null, '', next);
-  else history.replaceState(null, '', next);
+  // Entries this page pushed are marked, so its own Back button can be the browser's back, and a phone's back gesture works.
+  if (push) history.pushState({ tf: (history.state?.tf ?? 0) + 1 }, '', next);
+  else history.replaceState(history.state, '', next);
 }
 
 function select(sel, { focusDetail = false, scroll = true } = {}) {
+  if (sel && focusDetail && narrow()) state.listScroll = window.scrollY;
   state.sel = sel;
   writeHash({ push: true });
-  document.body.dataset.pane = sel && focusDetail ? 'detail' : 'queue';
+  showPane(sel && focusDetail ? 'detail' : 'queue');
   markCurrent(scroll);
   renderDetail();
   if (focusDetail) $('detail').focus();
@@ -507,6 +509,13 @@ function questionActions(item, { all }) {
   }
 
   if (item.state === 'changed') buttons.push(button(item.resolution === 'answered' ? 'Answer still applies' : 'Still applies', () => confirmAnswer(item), 'btn btn-primary'));
+  // Asking is one gesture on a phone: the share sheet takes the text to Slack or Messages, and the question counts as sent.
+  if (item.state === 'open' && item.copyText && navigator.share) {
+    buttons.push(button('Send question', async () => {
+      try { await navigator.share({ text: item.copyText }); } catch { return; } // dismissed: nothing was sent
+      tick(item, 'sent');
+    }, 'btn btn-primary'));
+  }
   if (item.state === 'open') buttons.push(button(RESOLUTION.sent[0], () => tick(item, 'sent')));
   if (item.state === 'open' || item.state === 'waiting') buttons.push(button(RESOLUTION.dropped[0], () => { state.dropping = state.dropping === item.id ? null : item.id; renderDetail(); }));
   if (item.resolution) buttons.push(button('Reopen', () => tick(item, null)));
@@ -642,7 +651,7 @@ function composer(item) {
     options,
     h('label', { class: 'composer-label', for: bodyId }, item.answer ? 'A newer answer' : options ? 'Or in your own words' : 'The answer'),
     body, source,
-    h('div', { class: 'composer-actions' }, save, h('span', { class: 'slip-meta composer-hint' }, 'Markdown works. Ctrl+Enter saves.')),
+    h('div', { class: 'composer-actions composer-save' }, save, h('span', { class: 'slip-meta composer-hint' }, 'Markdown works. Ctrl+Enter saves.')),
   );
 }
 
@@ -651,6 +660,15 @@ function composer(item) {
 // ---------------------------------------------------------------------------
 
 const narrow = () => window.matchMedia('(max-width: 62rem)').matches;
+
+/** On a phone the list and the detail are separate screens; each keeps its own scroll position. */
+function showPane(pane) {
+  const before = document.body.dataset.pane;
+  document.body.dataset.pane = pane;
+  if (!narrow() || before === pane) return;
+  if (pane === 'detail') window.scrollTo(0, 0);
+  else requestAnimationFrame(() => window.scrollTo(0, state.listScroll ?? 0));
+}
 
 function cell(label, value, { strong = false, mark = false } = {}) {
   return h('span', { class: 'cell', dataset: { label, strong, mark } }, mark ? h('span', null, value ?? '') : value ?? '');
@@ -824,6 +842,8 @@ function renderTop() {
   if (c.hosted && c.pushedAt) sentences.push(`Pushed ${ago(c.pushedAt)}${c.pushedFrom ? ` from ${c.pushedFrom}` : ''}.`);
   $('cycle-line').textContent = sentences.join(' ');
   document.title = m.counts.needsYou ? `(${m.counts.needsYou}) Taskflow` : 'Taskflow';
+  $('tab-needs-count').textContent = m.counts.needsYou ? String(m.counts.needsYou) : '';
+  $('tab-notes').hidden = !c.summaryFile;
 
   // An archive never changes, so "Live" would be a lie there.
   const live = $('live');
@@ -1001,7 +1021,7 @@ function batchDetail(b) {
       h('div', null,
         h('h2', { class: 'detail-title' }, b.name),
         h('p', { class: 'detail-state' }, laneSentence(b)))),
-    command ? h('div', { class: 'command' }, h('code', null, command), copyButton('Copy command', command, 'Command copied', 'btn btn-primary')) : null,
+    command ? h('div', { class: 'command' }, h('code', null, command), copyButton(b.lane === 'ready' ? 'Copy start command' : 'Copy command', command, 'Command copied', 'btn btn-primary')) : null,
     h('dl', { class: 'facts' },
       branch ? fact(b.branch ? 'Branch' : 'Suggested branch', h('code', null, branch), copyButton('Copy', branch, 'Branch copied', 'btn btn-quiet')) : null,
       b.dependsOn.length ? fact('Waits on', b.dependsOn.map((d) => refButton(d.key)), b.blockedBy.length ? `${b.blockedBy.length} still to finish` : 'all finished') : fact('Waits on', 'Nothing'),
@@ -1028,7 +1048,7 @@ function renderDetail() {
   let content;
   let scrollTo = null;
   const sel = state.sel;
-  const back = h('button', { type: 'button', class: 'btn detail-back', onclick: () => { document.body.dataset.pane = 'queue'; $('queue').focus(); } }, 'Back to the queue');
+  const back = h('button', { type: 'button', class: 'btn detail-back', onclick: () => { if (history.state?.tf) history.back(); else select(null); } }, 'Back');
 
   if (sel?.type === 'batch' && m.batches[sel.id]) {
     content = batchDetail(m.batches[sel.id]);
@@ -1109,6 +1129,36 @@ function disconnect() {
   source = null;
   clearInterval(pollTimer);
   pollTimer = null;
+}
+
+// -- phone: a tab bar, and a save bar the keyboard cannot cover ---------------------------------
+
+function showTab(tab) {
+  document.body.dataset.tab = tab;
+  for (const button of document.querySelectorAll('#tabbar [data-tab]')) button.setAttribute('aria-pressed', String(button.dataset.tab === tab));
+  try { sessionStorage.setItem('taskflow-tab', tab); } catch { /* private mode */ }
+}
+for (const button of document.querySelectorAll('#tabbar [data-tab]')) {
+  button.addEventListener('click', () => {
+    showTab(button.dataset.tab);
+    if (state.sel && narrow()) select(null); else window.scrollTo(0, 0);
+  });
+}
+$('tab-notes').addEventListener('click', () => $('notes-button').click());
+// "Needs you" is the phone's home: it is what a phone is picked up for.
+showTab((() => { try { return sessionStorage.getItem('taskflow-tab'); } catch { return null; } })() === 'queue' ? 'queue' : 'needs');
+
+// iOS lays fixed and sticky elements out against the layout viewport, which the keyboard does not shrink.
+// The visual viewport is what is actually visible: keep the save bar inside it.
+if (window.visualViewport) {
+  const track = () => {
+    const hidden = Math.max(0, window.innerHeight - visualViewport.height - visualViewport.offsetTop);
+    document.documentElement.style.setProperty('--keyboard', `${Math.round(hidden)}px`);
+    document.body.dataset.keyboard = hidden > 120 ? 'open' : 'closed';
+  };
+  visualViewport.addEventListener('resize', track);
+  visualViewport.addEventListener('scroll', track);
+  track();
 }
 
 // "Pushed 3 minutes ago" goes stale by standing still.
@@ -1219,13 +1269,17 @@ $('cycle-select').addEventListener('change', async (event) => {
   connect();
 });
 
-window.addEventListener('hashchange', () => {
+// Back, forward and a hand-edited address all land here. The URL is the truth about what is open.
+function followAddress() {
   const before = state.cycle;
   readHash();
   if (state.cycle !== before) { state.model = null; loadModel().catch(() => {}); return; }
   $('search').value = state.query;
+  if (narrow()) showPane(state.sel ? 'detail' : 'queue');
   if (state.model) render();
-});
+}
+window.addEventListener('popstate', followAddress);
+window.addEventListener('hashchange', followAddress);
 
 /** Hosted only: who is looking, and whether they may write here. */
 async function loadViewer() {

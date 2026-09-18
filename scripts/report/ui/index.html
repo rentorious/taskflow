@@ -2,8 +2,14 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#dce2e3" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#151c1e" media="(prefers-color-scheme: dark)">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<link rel="manifest" href="manifest.webmanifest" crossorigin="use-credentials">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icon-180.png">
 <title>Taskflow</title>
 <script src="theme.js"></script>
 <link rel="stylesheet" href="styles.css">
@@ -75,6 +81,12 @@
 </dialog>
 
 <div class="toast" id="toast" role="status" aria-live="polite"></div>
+<nav class="tabbar" id="tabbar" aria-label="Sections">
+  <button type="button" class="tab" data-tab="needs" aria-pressed="true"><span class="tab-count" id="tab-needs-count"></span>Needs you</button>
+  <button type="button" class="tab" data-tab="queue" aria-pressed="false">Queue</button>
+  <button type="button" class="tab" id="tab-notes">Cycle notes</button>
+</nav>
+
 <script type="module" src="app.js"></script>
 </body>
 </html>
