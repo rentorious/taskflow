@@ -29,11 +29,13 @@ export async function roundTrip(spec, { now = NOW, cycleId = CYCLE_ID, store = n
   const wire = JSON.parse(JSON.stringify(built.payload));
   const texts = new Map();
   for (const [hash, blob] of built.blobs) texts.set(hash, (await blob.read()).toString('utf8'));
-  const back = store ? await store({ wire, blobs: built.blobs, dir }) : rawFromPayload(wire, { text: (hash) => texts.get(hash), has: (hash) => texts.has(hash) });
+  // A `store` puts something real in the middle (the hosted server's database) and may bring its own records back.
+  const stored = store ? await store({ wire, blobs: built.blobs, dir, spec }) : null;
+  const back = stored?.raw ?? rawFromPayload(wire, { text: (hash) => texts.get(hash), has: (hash) => texts.has(hash) });
 
   return {
     dir, raw, records, wire, blobs: built.blobs, back,
     fromFiles: buildModel(raw, { human: records, enrichment, now }),
-    fromPayload: buildModel(back, { human: records, enrichment: wire.enrichment, now }),
+    fromPayload: buildModel(back, { human: stored?.records ?? records, enrichment: wire.enrichment, now }),
   };
 }
