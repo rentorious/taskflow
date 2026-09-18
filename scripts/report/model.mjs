@@ -1,13 +1,14 @@
 // Pure view-model builder: (RawCycle, ticks, enrichment, now) -> ViewModel.
 // No file or network access here, so every rule below is unit-testable.
 //
-// Guiding rule for lanes: "Ready" must equal, in the same order, what
-// `/taskflow:implement` with no arguments would auto-claim. The rules mirror
-// Step 1 of skills/implement/SKILL.md; change them together.
+// Guiding rule for lanes: "Ready" is, in the same order, what `taskflow claim`
+// with no arguments takes. That holds by construction: claim runs gate.mjs over
+// this model and reads the Ready lane. implement no longer restates the rule.
 
 import { createHash } from 'node:crypto';
 import { parseEstimate, sumEstimates } from './estimates.mjs';
-import { deriveInbox } from './inbox.mjs';
+import { blocksClaim } from './gate.mjs';
+import { deriveBatchItems, deriveTaskItems, resolveItems } from './inbox.mjs';
 import { extractFiles, parsePlan, renderMarkdown, safeUrl } from './markdown.mjs';
 
 export const MODEL_VERSION = 1;
@@ -112,7 +113,7 @@ function isStaleFile(file) {
 // Lane derivation — first match wins. Row numbers refer to the design table.
 // ---------------------------------------------------------------------------
 
-export function deriveLane({ status, locked, lockAgeMs, fileStale, indexTasksAllStale, depReason, prState }) {
+export function deriveLane({ status, locked, lockAgeMs, fileStale, indexTasksAllStale, depReason, prState, questionsOpen = 0 }) {
   if (status === 'done') return { lane: 'shipped', reason: null };                              // 1
   if (status === 'pr-created') {
     if (prState === 'merged') return { lane: 'shipped', reason: null };                          // 2
@@ -127,8 +128,9 @@ export function deriveLane({ status, locked, lockAgeMs, fileStale, indexTasksAll
       : { lane: 'blocked', reason: 'stale-lock' };                                               // 9
   }
   if (indexTasksAllStale) return { lane: 'stale', reason: 'tasks-left-todo' };                   // 10
-  if (!depReason) return { lane: 'ready', reason: null };                                        // 11
-  return { lane: 'blocked', reason: depReason };                                                 // 12
+  if (depReason) return { lane: 'blocked', reason: depReason };                                  // 11 — outranks questions: answering alone would not free it
+  if (questionsOpen > 0) return { lane: 'blocked', reason: 'waiting-on-answers' };               // 12
+  return { lane: 'ready', reason: null };                                                        // 13
 }
 
 // ---------------------------------------------------------------------------
@@ -223,6 +225,24 @@ export function buildModel(raw, { ticks = { items: {} }, enrichment = null, now 
   for (const key of keys) graph[key] = unique(indexBatches[key]?.depends_on ?? []).filter((d) => d !== key);
   const cycleMembers = findCycleMembers(graph);
 
+  // Before any item is made: an item copies its task's batch, and must not keep a dead key.
+  for (const t of Object.values(tasks)) {
+    if (t.batch && !(t.batch in indexBatches)) {
+      problem('batch-missing', t.id, `Task points at ${t.batch}, which is not in the index.`);
+      t.disposition = 'unassigned';
+      t.batch = null;
+    }
+  }
+
+  // Question states come first, because an open blocking question decides a lane.
+  const taskItems = resolveItems(deriveTaskItems({ tasks: Object.values(tasks), batchOrder: keys, suggestions: index.suggestions, problems }), ticks);
+  const itemsByTask = new Map();
+  for (const item of Object.values(taskItems)) {
+    if (item.subject.type !== 'task') continue;
+    if (!itemsByTask.has(item.subject.id)) itemsByTask.set(item.subject.id, []);
+    itemsByTask.get(item.subject.id).push(item);
+  }
+
   const batches = {};
   for (const key of keys) {
     const info = indexBatches[key] ?? {};
@@ -284,6 +304,10 @@ export function buildModel(raw, { ticks = { items: {} }, enrichment = null, now 
         }
       : null;
 
+    // A task that left "to do" is skipped by implement, so its questions hold nothing up.
+    const liveTaskIds = taskIds.filter((id) => !tasks[id].indexStale && data?.tasks?.[id]?.status !== 'stale');
+    const blockingItemIds = liveTaskIds.flatMap((id) => (itemsByTask.get(id) ?? []).filter(blocksClaim).map((item) => item.id));
+
     const lockAgeMs = lock ? Math.max(0, now - lock.mtimeMs) : null;
     const { lane, reason } = deriveLane({
       status,
@@ -293,6 +317,7 @@ export function buildModel(raw, { ticks = { items: {} }, enrichment = null, now 
       indexTasksAllStale: taskIds.length > 0 && taskIds.every((id) => tasks[id].indexStale),
       depReason,
       prState: pr?.state ?? null,
+      questionsOpen: blockingItemIds.length,
     });
 
     const lastActivityMs = Math.max(file.mtimeMs ?? 0, lock?.mtimeMs ?? 0) || null;
@@ -351,7 +376,8 @@ export function buildModel(raw, { ticks = { items: {} }, enrichment = null, now 
       },
       rationaleHtml: typeof info.rationale === 'string' ? renderMarkdown(info.rationale).html : null,
       openQuestions: 0,
-      blockingQuestions: 0,
+      blockingQuestions: blockingItemIds.length,
+      blockingItemIds,
       hasLowConfidence: members.some((t) => t.confidence === 'low'),
       pr,
       worktree: worktreeHit ? { path: worktreeHit.path, exists: true } : null,
@@ -374,27 +400,19 @@ export function buildModel(raw, { ticks = { items: {} }, enrichment = null, now 
   }
 
   for (const t of Object.values(tasks)) {
-    if (t.batch && !batches[t.batch]) {
-      problem('batch-missing', t.id, `Task points at ${t.batch}, which is not in the index.`);
-      t.disposition = 'unassigned';
-      t.batch = null;
-    }
     // Only worth raising while the batch can still be claimed.
     const claimable = !raw.cycle?.isArchive && ['ready', 'blocked', 'in-flight'].includes(batches[t.batch]?.lane);
     if (t.disposition === 'batched' && !t.plan.exists && claimable) problem('plan-missing', t.id, 'No plan file. Implement will skip this task.');
   }
 
   const orderedBatches = keys.map((k) => batches[k]);
-  const inbox = deriveInbox({ tasks: Object.values(tasks), batches: orderedBatches, suggestions: index.suggestions, ticks });
+  const inbox = { ...taskItems };
+  for (const [id, item] of Object.entries(resolveItems(deriveBatchItems(orderedBatches), ticks))) inbox[id] ??= item;
 
-  const unresolved = (item) => item.state !== 'handled';
   for (const item of Object.values(inbox)) {
     if (item.subject.type === 'task') tasks[item.subject.id]?.inboxIds.push(item.id);
     const b = item.subject.batch ? batches[item.subject.batch] : null;
-    if (b && item.kind === 'question' && unresolved(item)) {
-      b.openQuestions++;
-      if (item.blocking) b.blockingQuestions++;
-    }
+    if (b && item.kind === 'question' && item.state !== 'handled') b.openQuestions++;
   }
 
   // -- lanes -----------------------------------------------------------------

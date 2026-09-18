@@ -159,6 +159,7 @@ function batchNote(b) {
       if (b.laneReason === 'dep-stale') return `Waits on ${batchRefs(b.blockedBy)}, which went stale`;
       if (b.laneReason === 'dep-missing') return 'Waits on a batch that does not exist';
       if (b.laneReason === 'dep-cycle') return `Stuck in a dependency loop with ${batchRefs(b.blockedBy)}`;
+      if (b.laneReason === 'waiting-on-answers') return `Waits on ${b.blockingQuestions} answer${b.blockingQuestions === 1 ? '' : 's'}`;
       return `Waits on ${batchRefs(b.blockedBy)}`;
     case 'in-flight': {
       const done = `${b.progress.committed} of ${b.progress.total} committed`;

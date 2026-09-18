@@ -46,11 +46,19 @@ describe('deriveLane — first match wins', () => {
     assert.equal(lane({ locked: true, lockAgeMs: 1000, depReason: 'deps' }), 'in-flight/claiming');
   });
 
-  test('rows 10-12: pending and unlocked', () => {
+  test('rows 10-13: pending and unlocked', () => {
     assert.equal(lane({ indexTasksAllStale: true }), 'stale/tasks-left-todo');
     assert.equal(lane({}), 'ready');
     assert.equal(lane({ depReason: 'deps' }), 'blocked/deps');
     assert.equal(lane({ depReason: 'dep-cycle' }), 'blocked/dep-cycle');
+    assert.equal(lane({ questionsOpen: 2 }), 'blocked/waiting-on-answers');
+    assert.equal(lane({ questionsOpen: 2, depReason: 'deps' }), 'blocked/deps', 'answering alone would not free it');
+  });
+
+  test('open questions never move a batch that is already past claiming', () => {
+    assert.equal(lane({ questionsOpen: 1, status: 'in-progress', locked: true }), 'in-flight');
+    assert.equal(lane({ questionsOpen: 1, status: 'pr-created', prState: 'open' }), 'pr-open');
+    assert.equal(lane({ questionsOpen: 1, locked: true, lockAgeMs: 1000 }), 'in-flight/claiming');
   });
 });
 
@@ -70,7 +78,7 @@ describe('kitchen-sink cycle', () => {
       'batch-3': 'in-flight',
       'batch-4': 'in-flight/claiming',
       'batch-5': 'ready',
-      'batch-6': 'ready',
+      'batch-6': 'blocked/waiting-on-answers',
       'batch-7': 'ready',
       'batch-8': 'blocked/deps',
       'batch-9': 'blocked/stale-lock',
@@ -86,8 +94,9 @@ describe('kitchen-sink cycle', () => {
   });
 
   test('Ready is exactly what implement would auto-claim, in order', () => {
-    assert.deepEqual(ctx.model.laneOrder.ready, ['batch-5', 'batch-6', 'batch-7', 'batch-16', 'batch-17']);
-    assert.deepEqual(ctx.model.laneOrder.ready.map((k) => ctx.model.batches[k].claimOrder), [1, 2, 3, 4, 5]);
+    assert.deepEqual(ctx.model.laneOrder.ready, ['batch-5', 'batch-7', 'batch-16', 'batch-17'], 'batch-6 waits on an answer');
+    assert.deepEqual(ctx.model.laneOrder.ready.map((k) => ctx.model.batches[k].claimOrder), [1, 2, 3, 4]);
+    assert.equal(ctx.model.batches['batch-6'].claimOrder, null);
   });
 
   test('blockedBy / unblocks / stacking', () => {
@@ -162,8 +171,12 @@ describe('kitchen-sink cycle', () => {
     assert.equal(counts.needsYou, laneOrder['needs-you'].length - 1);
 
     assert.equal(batches['batch-6'].blockingQuestions, 1);
-    assert.equal(batches['batch-6'].lane, 'ready', 'an open question marks the row; it never moves the lane');
+    assert.deepEqual(batches['batch-6'].blockingItemIds, ['question:hb108:question']);
+    assert.equal(batches['batch-6'].lane, 'blocked', 'an open blocking question keeps the batch out of Ready');
     assert.ok(batches['batch-6'].hasLowConfidence);
+    assert.equal(batches['batch-8'].blockingQuestions, 1, 'a sent question is not an answer');
+    assert.equal(batches['batch-8'].laneReason, 'deps', 'the dependency outranks the question');
+    assert.equal(batches['batch-9'].blockingQuestions, 0, 'a fallback question on a confident task does not block');
   });
 
   test('task detail renders plan sections safely', () => {
@@ -219,8 +232,9 @@ describe('all-pending cycle (schema v1, straight after triage)', () => {
 
   test('ready and blocked match what implement would do', () => {
     const { laneOrder, batches, counts } = ctx.model;
-    assert.deepEqual(laneOrder.ready, Array.from({ length: 10 }, (_, i) => `batch-${i + 1}`));
-    assert.deepEqual(laneOrder.blocked, ['batch-11', 'batch-12']);
+    assert.deepEqual(laneOrder.ready, Array.from({ length: 9 }, (_, i) => `batch-${i + 1}`));
+    assert.deepEqual(laneOrder.blocked, ['batch-10', 'batch-11', 'batch-12']);
+    assert.equal(batches['batch-10'].laneReason, 'waiting-on-answers', 'a prose question on a low-confidence task gates too');
     assert.deepEqual(batches['batch-11'].blockedBy, ['batch-1', 'batch-2', 'batch-5']);
     assert.deepEqual(batches['batch-3'].unblocks, ['batch-12']);
     assert.equal(counts.inFlight + counts.prOpen + counts.shipped + counts.stale, 0);

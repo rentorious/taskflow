@@ -42,9 +42,20 @@ const KIND_RANK = {
 };
 
 const KEY_PATTERN = /^[a-z0-9-]{1,32}$/;
+const MAX_OPTIONS = 8;
+const MAX_OPTION_CHARS = 120;
 
-export function fingerprint(title, text) {
-  return createHash('sha1').update(`${title ?? ''}\n${text ?? ''}`).digest('hex').slice(0, 12);
+// Options join the hash only when there are any, so every fingerprint stored
+// before options existed stays valid.
+export function fingerprint(title, text, options = null) {
+  const tail = options?.length ? `\n${options.join('\n')}` : '';
+  return createHash('sha1').update(`${title ?? ''}\n${text ?? ''}${tail}`).digest('hex').slice(0, 12);
+}
+
+function cleanOptions(value) {
+  if (!Array.isArray(value)) return null;
+  const options = value.filter((o) => typeof o === 'string' && o.trim()).map((o) => o.trim().slice(0, MAX_OPTION_CHARS)).slice(0, MAX_OPTIONS);
+  return options.length ? options : null;
 }
 
 export function itemId(kind, subjectId, key) {
@@ -64,7 +75,7 @@ export function resolveState(item, tick) {
   return { state: WAITING_RESOLUTIONS.has(tick.resolution) ? 'waiting' : 'handled', ...base };
 }
 
-function makeItem({ kind, origin, subject, key, title, text = '', copyText = null, command = null, to = null, blocking = false, delivered = null, order = 0 }) {
+function makeItem({ kind, origin, subject, key, title, text = '', copyText = null, command = null, to = null, blocking = false, delivered = null, options = null, order = 0 }) {
   const tickable = origin !== 'derived';
   return {
     id: itemId(kind, subject.id, key),
@@ -79,34 +90,56 @@ function makeItem({ kind, origin, subject, key, title, text = '', copyText = nul
     to,
     blocking,
     delivered,
-    fingerprint: fingerprint(title, text),
+    options,
+    fingerprint: fingerprint(title, text, options),
     tickable,
     resolutions: tickable ? RESOLUTIONS[kind] ?? RESOLUTIONS.todo : [],
     rank: (KIND_RANK[kind] ?? 25) * 1000 + (blocking ? 0 : 500) + Math.min(order, 499),
   };
 }
 
-function needItems(task, batchOrder) {
+function needItems(task, batchOrder, problems) {
   const items = [];
   const seen = new Set();
   for (const need of Array.isArray(task.raw.needs) ? task.raw.needs : []) {
     if (!need || typeof need !== 'object') continue;
-    const key = KEY_PATTERN.test(need.key ?? '') ? need.key : null;
-    if (!key || seen.has(key)) continue;
-    seen.add(key);
     const kind = need.kind === 'question' || need.kind === 'owed-write' ? need.kind : 'todo';
     const text = typeof need.text === 'string' ? need.text : '';
+    const title = need.title || (kind === 'question' ? `Ask about ${task.shortName}` : task.shortName);
+    const options = kind === 'question' ? cleanOptions(need.options) : null;
+
+    // A need with a bad or repeated key must not vanish: dropping a blocking
+    // question would open the claim gate. Keep it under a key made from its
+    // content, and say so.
+    let key = KEY_PATTERN.test(need.key ?? '') ? need.key : null;
+    if (!key || seen.has(key)) {
+      const made = `q-${fingerprint(title, text, options)}`;
+      if (seen.has(made)) continue; // the same need written twice
+      problems?.push({
+        code: 'need-key',
+        subject: task.id,
+        message: key
+          ? `Two needs share the key "${key}". The second one is kept under "${made}"; re-run triage to give it a stable key.`
+          : `A need has no usable key (lowercase letters, digits and dashes, 32 at most). It is kept under "${made}"; re-run triage to give it a stable key.`,
+        since: null,
+        usingLastGood: false,
+      });
+      key = made;
+    }
+    seen.add(key);
+
     items.push(makeItem({
       kind,
       origin: 'index',
       subject: { type: 'task', id: task.id, batch: task.batch },
       key,
-      title: need.title || (kind === 'question' ? `Ask about ${task.shortName}` : task.shortName),
+      title,
       text,
       copyText: text || null,
       to: typeof need.to === 'string' ? need.to : null,
       blocking: need.blocking === true,
       delivered: kind === 'question' ? (need.delivered ?? 'none') : null,
+      options,
       order: batchOrder,
     }));
   }
@@ -114,19 +147,22 @@ function needItems(task, batchOrder) {
 }
 
 /**
+ * Items that come from tasks and the index. They need no lane, and lanes need
+ * them: an open blocking question keeps its batch out of Ready.
+ *
  * @param {object} ctx
- * @param {object[]} ctx.tasks      task views (with .raw index entry, .openQuestion fallback text)
- * @param {object[]} ctx.batches    batch views (lanes already derived)
- * @param {object[]} ctx.suggestions index.suggestions
- * @param {object}   ctx.ticks      {items:{id:tick}}
+ * @param {object[]} ctx.tasks        task views (with .raw index entry, .openQuestion fallback text)
+ * @param {string[]} ctx.batchOrder   batch keys in claim order
+ * @param {object[]} ctx.suggestions  index.suggestions
+ * @param {object[]} [ctx.problems]   health problems are appended here
  */
-export function deriveInbox({ tasks, batches, suggestions, ticks }) {
+export function deriveTaskItems({ tasks, batchOrder, suggestions, problems }) {
   const items = [];
-  const orderOf = new Map(batches.map((b, i) => [b.key, i]));
+  const orderOf = new Map(batchOrder.map((key, i) => [key, i]));
 
   for (const task of tasks) {
     const order = orderOf.get(task.batch) ?? 400;
-    const fromIndex = needItems(task, order);
+    const fromIndex = needItems(task, order, problems);
     items.push(...fromIndex);
 
     // Only fall back when triage wrote no `needs` at all; an explicit empty
@@ -173,9 +209,16 @@ export function deriveInbox({ tasks, batches, suggestions, ticks }) {
       copyText: typeof s.text === 'string' ? s.text : null,
     }));
   }
+  return items;
+}
 
-  for (const b of batches) items.push(...derivedItems(b, orderOf.get(b.key)));
+/** Problems computed from pipeline state. These need every batch's lane. */
+export function deriveBatchItems(batches) {
+  return batches.flatMap((b, order) => derivedItems(b, order));
+}
 
+/** Attach each item's state from what the developer recorded. First id wins. */
+export function resolveItems(items, ticks) {
   const byId = {};
   for (const item of items) {
     if (byId[item.id]) continue;
