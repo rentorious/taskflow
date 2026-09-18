@@ -210,7 +210,11 @@ async function loadModel({ announce = false } = {}) {
   let next;
   if (SNAPSHOT) next = SNAPSHOT.model;
   else next = await getJson('api/model');
-  if (state.model && next.version === state.model.version) return;
+  if (state.model && next.version === state.model.version) {
+    // Same picture, but a hosted mirror may have been refreshed since.
+    if (next.cycle.pushedAt !== state.model.cycle.pushedAt) { Object.assign(state.model.cycle, { pushedAt: next.cycle.pushedAt, pushedFrom: next.cycle.pushedFrom }); renderTop(); }
+    return;
+  }
 
   if (state.model && announce) {
     state.changed = new Set();
@@ -702,6 +706,13 @@ function renderQueue() {
   const body = $('queue-body');
   const scroll = $('queue').scrollTop;
 
+  if (m.cycle.empty && m.cycle.hosted) {
+    replace(body, h('div', { class: 'detail-empty' },
+      h('h2', null, 'Nothing has been pushed here yet'),
+      h('p', null, 'Push the cycle from the project and this page fills in on its own.'),
+    ));
+    return;
+  }
   if (m.cycle.empty) {
     replace(body, h('div', { class: 'detail-empty' },
       h('h2', null, 'No triage data here yet'),
@@ -794,6 +805,8 @@ function renderTop() {
     sentences.push(`${plural(m.counts.tasks, 'task')} in ${plural(m.counts.batches, 'batch', 'batches')}${agent ? `, about ${agent} of agent time` : ''}.`);
   }
   if (c.isArchive) sentences.push('Archived, read-only.');
+  // A hosted page mirrors a laptop. Its age is the first thing to know before trusting a lane.
+  if (c.hosted && c.pushedAt) sentences.push(`Pushed ${ago(c.pushedAt)}${c.pushedFrom ? ` from ${c.pushedFrom}` : ''}.`);
   $('cycle-line').textContent = sentences.join(' ');
   document.title = m.counts.needsYou ? `(${m.counts.needsYou}) Taskflow` : 'Taskflow';
 
@@ -1068,6 +1081,11 @@ function connect() {
   source = new EventSource('api/events');
   source.addEventListener('open', () => { clearInterval(pollTimer); pollTimer = null; setLive('live'); loadModel({ announce: true }).catch(() => {}); });
   source.addEventListener('model', () => loadModel({ announce: true }).catch(() => {}));
+  source.addEventListener('pushed', (event) => {
+    if (!state.model) return;
+    try { Object.assign(state.model.cycle, JSON.parse(event.data)); } catch { return; }
+    renderTop();
+  });
   source.addEventListener('error', () => { setLive('retrying'); startPolling(); });
 }
 
@@ -1077,6 +1095,9 @@ function disconnect() {
   clearInterval(pollTimer);
   pollTimer = null;
 }
+
+// "Pushed 3 minutes ago" goes stale by standing still.
+if (!SNAPSHOT) setInterval(() => { if (state.model?.cycle.hosted && !document.hidden) renderTop(); }, 60 * 1000);
 
 // Browsers allow six connections per origin. A hidden tab gives its stream back.
 document.addEventListener('visibilitychange', () => {
@@ -1204,7 +1225,12 @@ async function boot() {
     markCurrent(true);
     connect();
   } catch (error) {
-    replace($('queue-body'), h('div', { class: 'detail-empty' }, h('h2', null, 'The report server is not answering'), h('p', null, 'Start it again with /taskflow:report, then reload this page.'), h('p', { class: 'slip-meta' }, String(error.message ?? error))));
+    // Mounted under a project path means hosted: there is no local server for the reader to restart.
+    const hosted = /^\/p\//.test(location.pathname);
+    replace($('queue-body'), h('div', { class: 'detail-empty' },
+      h('h2', null, hosted ? 'The dashboard is not answering' : 'The report server is not answering'),
+      h('p', null, hosted ? 'Reload in a moment. The server may be restarting.' : 'Start it again with /taskflow:report, then reload this page.'),
+      h('p', { class: 'slip-meta' }, String(error.message ?? error))));
   }
 }
 

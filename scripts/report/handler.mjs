@@ -88,6 +88,7 @@ export async function createReportHandler({ backend, security = {}, canWrite = (
   const cycles = new Map();
   const clients = new Set();
   let lastBroadcast = null;
+  let lastPushedAt = null;
 
   async function getCycle(id) {
     const known = await backend.listCycles();
@@ -241,11 +242,19 @@ export async function createReportHandler({ backend, security = {}, canWrite = (
     for (const client of clients) client.write(`event: model\ndata: ${JSON.stringify({ version: modelVersion })}\n\n`);
   }
 
+  /** A push that changed nothing leaves the model's version alone, but the page still shows how fresh the mirror is. */
+  function announcePush(cycle) {
+    if (!cycle.pushedAt || cycle.pushedAt === lastPushedAt) return;
+    lastPushedAt = cycle.pushedAt;
+    for (const client of clients) client.write(`event: pushed\ndata: ${JSON.stringify({ pushedAt: cycle.pushedAt, pushedFrom: cycle.pushedFrom })}\n\n`);
+  }
+
   async function refreshLive() {
     if (clients.size === 0) return;
     try {
       const { model } = await getState('live', { force: true });
       broadcast(model.version);
+      announcePush(model.cycle);
     } catch {
       // The next poll retries; a transient read error must not kill the stream.
     }

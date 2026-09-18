@@ -6,6 +6,7 @@ import { createReader } from '../scripts/report/read.mjs';
 import { createTickStore } from '../scripts/report/ticks.mjs';
 import { allPending, archiveShape, kitchenSink } from './fixtures/specs.mjs';
 import { materializeTemp } from './helpers/cycle.mjs';
+import { rawCycle, task } from './helpers/raw.mjs';
 
 const NOW = Date.UTC(2026, 0, 15, 12, 0, 0);
 
@@ -273,4 +274,26 @@ test('an empty directory is an empty cycle, not an error', async () => {
   assert.equal(ctx.model.cycle.empty, true);
   assert.equal(ctx.model.counts.batches, 0);
   await rm(ctx.dir, { recursive: true, force: true });
+});
+
+describe('a cycle mirrored on a hosted server', () => {
+  const mirrored = (cycle) => buildModel({ ...rawCycle({ tasks: { t1: task('t1', { batch: 'batch-1' }) }, batches: { 'batch-1': { tasks: ['t1'] } } }), cycle: { id: 'live', isArchive: false, dir: null, indexFile: 'state.sam.json', slug: 'sam', ...cycle } }, { now: 0 });
+
+  test('says so, and says how fresh the mirror is', () => {
+    const { cycle } = mirrored({ hosted: true, uuid: 'u-1', pushedAt: '2026-02-04T11:58:00.000Z', pushedFrom: 'laptop', readOnly: true });
+    assert.deepEqual([cycle.hosted, cycle.uuid, cycle.pushedAt, cycle.pushedFrom, cycle.dir], [true, 'u-1', '2026-02-04T11:58:00.000Z', 'laptop', null]);
+    assert.equal(cycle.readOnly, true, 'read-only for this viewer, without being an archive');
+    assert.equal(cycle.isArchive, false);
+  });
+
+  test('a local cycle is none of that', () => {
+    const { cycle } = mirrored({});
+    assert.deepEqual([cycle.hosted, cycle.uuid, cycle.pushedAt, cycle.readOnly], [false, null, null, false]);
+  });
+
+  test('a push that changed nothing keeps the version, so open tabs do not repaint', () => {
+    const first = mirrored({ hosted: true, pushedAt: '2026-02-04T11:58:00.000Z' });
+    const again = mirrored({ hosted: true, pushedAt: '2026-02-04T12:03:00.000Z' });
+    assert.equal(again.version, first.version);
+  });
 });

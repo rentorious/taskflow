@@ -487,8 +487,14 @@ export function buildModel(raw, { human = null, ticks = null, enrichment = null,
     cycle: {
       id: raw.cycle?.id ?? 'live',
       isArchive: Boolean(raw.cycle?.isArchive),
-      readOnly: Boolean(raw.cycle?.isArchive),
+      // An archive never changes. A hosted cycle can also be read-only for the person looking at it.
+      readOnly: Boolean(raw.cycle?.isArchive || raw.cycle?.readOnly),
       dir: raw.cycle?.dir ?? null,
+      // Set by the hosted server: the cycle is a mirror of what a laptop last pushed.
+      hosted: Boolean(raw.cycle?.hosted),
+      uuid: raw.cycle?.uuid ?? null,
+      pushedAt: raw.cycle?.pushedAt ?? null,
+      pushedFrom: raw.cycle?.pushedFrom ?? null,
       indexFile: raw.cycle?.indexFile ?? null,
       slug: raw.cycle?.slug ?? null,
       empty: !raw.index,
@@ -525,7 +531,8 @@ export function buildModel(raw, { human = null, ticks = null, enrichment = null,
 
 // Fields that tick on every build without the picture changing. Leaving them
 // out keeps the ETag stable, so idle tabs do not re-render.
-const VOLATILE = new Set(['version', 'generatedAt', 'lockAgeMs', 'asOf']);
+// `pushedAt` moves on every push, changed or not; the stream announces it on its own.
+const VOLATILE = new Set(['version', 'generatedAt', 'lockAgeMs', 'asOf', 'pushedAt']);
 
 export function modelFingerprint(model) {
   const json = JSON.stringify(model, (key, value) => (VOLATILE.has(key) ? undefined : value));

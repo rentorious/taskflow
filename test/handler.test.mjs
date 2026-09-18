@@ -41,6 +41,7 @@ function memoryBackend() {
     written,
     opened,
     bump: () => { revision++; raw.index.tasks.t1.name = `Task t1, take ${revision}`; },
+    push: (at) => { revision++; Object.assign(raw.cycle, { hosted: true, pushedAt: at, pushedFrom: 'laptop' }); },
     listCycles: async () => [{ id: 'live', isArchive: false }, { id: '2026-01-01', isArchive: true, label: 'January' }],
     openCycle(entry) {
       return {
@@ -210,6 +211,29 @@ test('notify() announces a new version to open streams', async () => {
     const chunk = new TextDecoder().decode((await reader.read()).value);
     assert.match(chunk, /^event: model/);
     assert.notEqual(JSON.parse(chunk.split('data: ')[1]).version, first.version);
+    await reader.cancel();
+  } finally {
+    await app.close();
+  }
+});
+
+test('a push that changed nothing is announced on its own, without a new model version', async () => {
+  const app = await mount();
+  try {
+    app.backend.push('2026-02-04T11:00:00.000Z');
+    const first = await (await app.get('api/model')).json();
+    const stream = await app.get('api/events');
+    const reader = stream.body.getReader();
+    await reader.read(); // "retry: 3000"
+    await app.handler.notify(); // the first look at the stream announces where things stand
+    await reader.read();
+
+    app.backend.push('2026-02-04T11:05:00.000Z');
+    await app.handler.notify();
+    const chunk = new TextDecoder().decode((await reader.read()).value);
+    assert.match(chunk, /^event: pushed/);
+    assert.deepEqual(JSON.parse(chunk.split('data: ')[1]), { pushedAt: '2026-02-04T11:05:00.000Z', pushedFrom: 'laptop' });
+    assert.equal((await (await app.get('api/model')).json()).version, first.version);
     await reader.cancel();
   } finally {
     await app.close();
