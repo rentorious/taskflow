@@ -1,0 +1,9 @@
+.git
+**/node_modules
+**/.env*
+docs
+test
+server/test
+server/dev
+skills
+*.md
