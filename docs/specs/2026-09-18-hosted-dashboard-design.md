@@ -1,0 +1,387 @@
+# Hosted dashboard with answers and an implement gate — design
+
+Status: proposed 2026-09-18. Builds on `2026-09-17-report-rework-design.md` (1.4.0).
+
+## Goal
+
+1. The dashboard runs on Railway, not only on the developer's machine.
+2. The developer types answers (gathered from clients and colleagues) into the dashboard.
+3. `/taskflow:implement` reads those answers, and refuses to start a batch whose blocking
+   questions are not fully answered.
+4. The provider rule stands: the only ClickUp write taskflow makes is a task status change.
+   Answers live in taskflow's own database and are never written back to the provider.
+5. Several people can use one deployment: developers with their own cycles, and colleagues who only answer.
+6. The dashboard is used from a phone as often as from a desk. Mobile is a first-class layout, not a fallback.
+
+## Findings that shape the plan
+
+| # | Finding | Evidence | Consequence |
+|---|---|---|---|
+| F1 | There is nothing structured to gate on today | The live index has 0 `needs[]` and no `schema_version` (rebuilt from an archive). 4 of 24 plan files carry a prose `## Open Question` | Structured questions come first, before any hosting |
+| F2 | Schema v2 writes ONE question per task, with the fixed key `question` | `skills/triage/SKILL.md` Step 7a | "Answered fully" cannot be checked on a blob of several questions. One need per question |
+| F3 | implement has no question gate | Step 2 only prompts interactively on `confidence: low`. It never reads `needs[]` or ticks | The gate is new behaviour, not a port |
+| F4 | A prose gate is not reliable | triage Step 4 wrote ClickUp descriptions although the config said no comments | The gate is a script with an exit code, not a paragraph in a skill |
+| F5 | The report's whole security model is "loopback only" | `server.mjs`: binds 127.0.0.1, Host allowlist, no auth | Going public makes auth the main new work, more than the database |
+| F6 | The report already has the right seam | `model.mjs` is pure `(RawCycle, ticks, enrichment, now) -> view model`; only `read.mjs` and `ticks.mjs` touch disk | The server swaps two adapters and reuses model, inbox, markdown, estimates, snapshot and the UI unchanged |
+| F7 | `enrich.mjs` shells out to `gh` and `git` | `gh pr view`, `git worktree list` | Neither exists on Railway. PR state and worktrees are collected on the laptop and travel in the pushed snapshot (D19) |
+| F8 | Railway's "root directory" setting only pulls files from that directory | Railway monorepo guide | A `server/` root could not import `scripts/report/*.mjs`. Deploy from the repository root |
+| F9 | Railway closes an HTTP request at 15 minutes even with heartbeats, 5 minutes without data | Railway public networking limits | SSE streams get cut. The client already reconnects (`retry: 3000`) and falls back to polling; no change needed |
+| F10 | Ticks die with their cycle | Known limit in the 1.4.0 spec; 23 plans were carried from 09-17 into 09-18 | Human state is keyed by task, not by cycle |
+| F11 | A server may never hold or use anyone's Claude login. A user running the unmodified `claude` binary under their own subscription is explicitly fine | Claude Code "Legal and compliance", *Authentication and credential use*: developers "may not collect, store, or intermediate Claude.ai credentials or session tokens"; "Nor does it prevent an end user from signing in to the unmodified Claude Code binary with their own Claude subscription". Agent SDK products need API keys | Remote start is possible without API keys only if Claude Code runs where the user is signed in (their machine, or Anthropic's cloud under their account). Nothing Claude-related is ever stored on Railway except a routine's own fire token (F13) |
+| F12 | Remote Control has a server mode that accepts NEW sessions from the phone | `claude remote-control` "stays running ... waiting for remote connections"; `--spawn same-dir\|worktree\|session`, `--capacity`, `--permission-mode`. Permission prompts and `AskUserQuestion` are forwarded to the phone. All plans | Starting implement from the phone already works today with zero code |
+| F13 | Cloud routines have a per-routine HTTP trigger built for outside systems | `POST https://api.anthropic.com/v1/claude_code/routines/<trig_id>/fire`, bearer token "scoped to triggering that routine only", beta header `experimental-cc-routine-2026-04-01`, optional free-text `text` that arrives labelled as untrusted data (the saved prompt must opt in). Runs as the individual user on their subscription, daily run cap, research preview | A sanctioned "laptop is off" path exists, one routine per developer |
+| F14 | A routine's VM starts from a fresh clone | Skills "committed to the cloned repository" are available; default branches are `claude/`-prefixed; network is an allowlist; connectors are included with full write access and no prompts | The cycle directory and the taskflow config are gitignored, so a routine needs `taskflow pull --full`. The status-only provider rule would be prose-only there: leave the provider connector out of the routine |
+| F15 | claude.ai connectors reach Claude Code sessions and routines | Routines doc: connectors "are the claude.ai integrations on your account"; connector traffic is routed through Anthropic, so it needs no network allowlist entry | One MCP endpoint on the server serves Claude Code, the Claude phone app and routines |
+
+## Decisions
+
+| # | Decision | Choice | Why |
+|---|---|---|---|
+| D1 | Who owns which state | **Split ownership: one writer per datum.** The laptop owns pipeline state (index, batch files, plans, attachments) as files, exactly as today, and pushes a snapshot. The server owns human state (question status, answers, claims, audit log). Neither side writes the other's data | triage and implement are 1,300 lines of prompt that read and write JSON with file tools. Moving pipeline state behind an API rewrites both skills and puts a network call in every state change. With one writer per datum there is nothing to merge. It extends the 1.4.0 rule ("pipeline state is read-only; the report owns one file") |
+| D2 | Where the gate lives | **The claim is the gate.** Claiming a batch is one server transaction: accept the pushed snapshot, check the questions, compare-and-swap the claim row, return the answers | One code path, atomic, and it cannot read stale state because the push is part of the call. It also replaces the `mkdir` lock with a real lock that works across machines |
+| D3 | Gate rule | A batch is claimable only when every `blocking` question on every task in it is `answered` or `dropped`, **and** the stored fingerprint matches the current question text. `sent` does not pass. Non-blocking open questions warn and pass | "Stop me when it is not answered fully." A reworded question invalidates its answer until the developer confirms it still applies (one click) |
+| D4 | Escape hatch | None on the command. The way past an open question is to mark that question `dropped` in the dashboard, with a note | The decision is recorded on the question instead of vanishing in a `--force` flag |
+| D5 | Server unreachable | implement fails closed | The gate data lives on the server. Without it nothing can be verified |
+| D6 | Question shape | One `needs[]` entry per question, key `q-<slug>`, plus optional `options[]` for either/or questions | F2. The dashboard renders one answer box per question |
+| D7 | Answer identity | Keyed `(project, task_id, key)`, not by cycle. Append-only rows; the newest wins. Each row snapshots the question text it answered | F10. Survives `/taskflow:clean` and carry-over. An answer stays readable after the question is reworded or removed |
+| D8 | Lane rule | New reason `waiting-on-answers`. Such a batch leaves Ready; auto-claim moves on to the next one. This replaces "a claimable batch with an open client question stays in Ready with a marker" | Ready must keep meaning "what implement would claim" |
+| D9 | One source for the claim rule | New pure module `gate.mjs` (dependencies + questions -> claimable, reason, claim order). Used by `model.mjs` for lanes and by the claim endpoint. implement stops re-implementing the rule in prose: it asks the server | Removes the existing `model.mjs` <-> SKILL Step 1 duplication instead of adding a third copy |
+| D10 | Browser auth | GitHub OAuth, scope `read:user` only. Users live in the database. `ADMIN_GITHUB_LOGINS` bootstraps instance admins on first sign-in; everyone else is invited by GitHub login into a project. An uninvited login sees a "not invited" page and no data. Server-side sessions, 30-day rolling; cookie `HttpOnly; Secure; SameSite=Lax` | No password to store or brute-force. A long session matters on a phone |
+| D11 | CLI auth | Bearer token per user, created in the dashboard, stored hashed. On the laptop: `~/.config/taskflow/credentials.json`, mode 0600, keyed by server URL. The server takes the user from the token, never from a slug in the request body | Never in the repository, never in the project config. Every write is attributable |
+| D12 | Storage | Railway Postgres only. Snapshot as `jsonb`, plan files as text rows, attachments as content-addressed `bytea` (sha256), 10 MB cap per file | One stateful thing to back up; the app service stays stateless. 11 MB per cycle today. A Railway volume would add: one volume per service, no replicas, downtime on redeploy |
+| D13 | Code layout | Same repository. Root `package.json` (`start: node server/main.mjs`, single dependency `pg`) and `railway.json` with healthcheck `/api/health`. Everything under `scripts/` stays zero-dependency | F8. The plugin still installs by git clone; Claude Code ignores `package.json` |
+| D14 | Local mode | Kept. File adapters stay as the test and offline-viewer backends. `/taskflow:report` prints the hosted URL when `server_url` is configured | The 63 tests run on file fixtures. The answer UI is written once against the store interface |
+| D15 | Tenancy | **One deployment = one team.** Many users and many projects inside it; not a shared SaaS | Ticket text is client-confidential. Isolation between unrelated tenants is the most expensive security property to get right and keep right; a Railway template makes a private instance one click. Inside an instance, isolation is per project through membership |
+| D17 | Roles, per project | `admin` (members, settings), `developer` (own cycle, CLI token, claim, answer, drop), `answerer` (sees questions with their task title and summary, answers them; no plans, no lanes, no token) | Colleagues who hold the answers can type them in directly. One `authorize(user, project, action)` function guards every data route; every query carries `project_id` |
+| D18 | What is per user, what is per project | Per user: cycle (`project` + `user`), claims, tokens, sessions. Per project: answers and question state, keyed `(project, task_id, key)` | Two developers triage different tasks, so their cycles and claims never collide. An answer follows its task when the task is reassigned |
+| D19 | PR and worktree state | Collected on the laptop by the existing `enrich.mjs` and sent with the push. The server holds no GitHub repository token in v1 | In a multi-user instance a server-side token would need access to every project's repository. The pushing user's own `gh` login already has exactly the right access. Cost: PR state is as fresh as the last push |
+| D20 | Mobile | Designed phone-first for the answering flow; see "Mobile" | Goal 6 |
+| D21 | Whose answer opens the gate | An answer counts when its author holds `developer` or `admin` on the project. An `answerer`'s answer is `proposed` until a developer accepts it (one tap). Every answer records `via`: `web` or `mcp` | Answers are fed to a code-writing agent. The developer stays the person who vouches for that input, and an answer recorded through Claude is visibly marked so an invented one can be spotted |
+| D22 | Claude as a second interface | The server exposes one remote MCP endpoint (`/mcp`) over the same service functions as the HTTP API. `push` and `claim` stay in the CLI | F15. A remote MCP server cannot read the laptop's files, and the gate must stay an exit code |
+| D23 | Starting implement from the app | Three tiers, in order: Remote Control server mode (exists today), a local runner, a cloud routine. See "Starting implement from the app" | F11–F14 |
+| D24 | What a start request may contain | A project, a batch key and the requesting user. Never prompt text | The start channel reaches a developer's machine. A fixed vocabulary keeps a compromised server from turning it into remote code execution |
+| D16 | No provider credentials on the server | The Railway service has no ClickUp token at all | The status-only rule becomes structural: the dashboard cannot write to ClickUp |
+
+## Architecture
+
+```
+laptop                                         Railway
+------                                         -------
+skills/triage      writes files        push    server/main.mjs (node:http + pg)
+skills/implement   writes files   ─────────▶     source-pg.mjs   RawCycle from Postgres
+scripts/taskflow.mjs (CLI, zero-dep)             store-pg.mjs    question state, answers, claims
+  push | claim | release | answers    claim      gate.mjs        shared, pure
+  questions | status | login     ◀─────────      model/inbox/markdown/ui   reused unchanged
+                                   answers      Postgres
+browser  ── GitHub OAuth ──────────────────▶   dashboard: read pipeline state, write answers
+```
+
+Adapter interfaces (both have a file and a Postgres implementation):
+
+- `CycleSource.read(cycleId) -> RawCycle` — shape of `read.mjs` today: `cycle, index, batchFiles, locks,
+  plans, attachments, summaryFile, config, problems`. On the server `locks` comes from the `claim` table.
+- `HumanStore`: `load(project)`, `setResolution(itemId, ...)`, `addAnswer(itemId, ...)`, `confirmAnswer(itemId)`.
+- `watch.mjs` is not used on the server: the model version bumps on a push or on a human write, then broadcasts.
+- `enrich.mjs` runs on the laptop inside `taskflow push`; its result is part of the snapshot and the server
+  feeds it to `model.mjs` as the `enrichment` argument, with the push time as `asOf`.
+- The project config gains `"server": { "url": "...", "project": "<project key>" }`. No secrets there.
+
+### Push
+
+`taskflow push` is idempotent (running it twice equals running it once) and two-phase so nothing is re-uploaded:
+
+1. `PUT /api/sync/cycle` — index, batch files, summary, worktree list, and a manifest of plan files and
+   attachments as `{id, sha256, size}`. The server answers with the hashes it does not have.
+2. `PUT /api/sync/blob/<sha256>` for each missing one.
+
+Called at: end of triage, inside `claim`, after every batch-file write in implement, after the PR is created,
+and by `/taskflow:clean` (which flips the server cycle to archived). The dashboard header shows
+"pushed N minutes ago" and `dev_head`, so a stale mirror is visible instead of silent.
+
+Cycle identity: triage writes a `cycle_id` (uuid) into a new index; the CLI falls back to `last_triage`.
+
+### Claim
+
+`taskflow claim [batch-key] [--stack]`:
+
+1. push (above);
+2. `POST /api/claim` — in one transaction: build the RawCycle, run `gate.mjs`, insert the claim row
+   (partial unique index on unreleased claims gives compare-and-swap);
+3. on success write `<output_dir>/claim.json` and `<output_dir>/answers/<task-id>.md`, create the local
+   `.lock` directory so the local viewer stays truthful.
+
+| Exit | Meaning | Output |
+|---|---|---|
+| 0 | claimed | batch key, tasks, path to answers |
+| 2 | blocking questions open | each question: task, title, state (`open`, `sent`, `changed`), dashboard link |
+| 3 | already claimed | by which host, since when; offers resume when it is this host |
+| 4 | server unreachable or unauthorised | what to check |
+| 5 | dependency not complete (named claim only) | which; re-run with `--stack` to stack on its branch |
+| 6 | nothing claimable | per-batch reason |
+
+`taskflow release <batch-key>` replaces `--unlock`.
+
+### Skill changes
+
+- **implement Step 1.3–1.5:** replace the `mkdir` claim logic with `taskflow claim`. Non-zero exit: print
+  the output and stop. Step 3 (worktree) refuses to run without `claim.json` for that batch.
+- **implement Step 1.7:** read `answers/<task-id>.md` next to each plan. When an answer contradicts the
+  plan's Approach, rewrite Approach and Risks before coding (same path as today's Step 2 option c).
+- **implement Step 2:** a low-confidence task whose blocking questions are all answered no longer prompts.
+- **implement:** `taskflow push` after each batch-file write.
+- **triage Step 7a:** one need per question (D6). Before writing, call `taskflow questions <task-id>` and
+  reuse the key of any question that is the same question. Drop the `delivered` values `description`
+  and `comment`; delivery is a human act, recorded as `sent` in the dashboard.
+- **triage Step 3.5 and Step 4:** remove the `link_tasks` and description `update_task` calls (already
+  owed from the status-only rule). Enrichment text goes to the plan file only.
+- **clean:** push the archive flip.
+
+### Dashboard changes
+
+- Question item: answer box (markdown), "source" field (who, where, when — free text), states
+  `open -> sent -> answered | dropped`, a `changed` state with "answer still applies" and "re-answer".
+- Answer history per question.
+- Batch strip: "waiting on N answers" with the hatched blocked treatment; links to the questions.
+- Header: project switcher, cycle switcher (mine / a teammate's, read-only), last push age, `dev_head`, sign-out.
+- Settings: create and revoke your CLI tokens; admins manage members and roles.
+- Answerer view: the question list only (task title, summary, question, answer history).
+
+### Mobile
+
+The phone's job is answering; the desk's job is the whole queue. Same code, no build step.
+
+- **Below ~720 px the queue and the detail pane are separate screens**: list, tap, full-screen detail with a
+  back control. Navigation goes through the History API so the phone's back gesture works.
+- **"Needs you" is the phone's home screen.** A bottom tab bar switches between Needs you, Queue and Cycle notes.
+- **Answer composer:** full-width text area; input text at 16 px or more (iOS zooms the page below that); the
+  Save bar is sticky, respects `env(safe-area-inset-bottom)` and follows `visualViewport` so the keyboard
+  never covers it.
+- **Drafts are saved per question in `localStorage`** as you type: mobile browsers evict background tabs.
+- **Saving is idempotent** (the request carries an idempotency key, so a double tap or a retry after a dropped
+  connection produces one answer). A failed save stays on screen with a retry, never silently lost.
+- **`options[]` questions render as large tap targets**: an either/or question is one tap.
+- **Asking is a share-sheet action:** "Send question" uses `navigator.share` where it exists (falls back to
+  copy), so the paste-ready text goes straight into Slack or Messages. It marks the question `sent`.
+- Touch targets 44 px or more; nothing depends on hover; the screenshot lightbox supports pinch and swipe.
+- Installable (web app manifest, `display: standalone`). **No service-worker caching of ticket data** in v1:
+  client text is not persisted on the phone.
+- Live updates: a hidden tab already closes its stream and refetches when it becomes visible; that is the
+  normal case on a phone, not the exception.
+- **Verification:** every UI phase is checked in Playwright device emulation (an iPhone and a Pixel profile) and
+  from screenshots at 360, 390 and 430 px, in both themes, in addition to the desktop widths.
+
+## Claude as a second interface (MCP)
+
+One endpoint, three surfaces: Claude Code (bundled in the plugin), the Claude phone and desktop apps (added as a
+custom connector), and cloud routines (connectors come along automatically).
+
+| Tool | Does | Role |
+|---|---|---|
+| `list_open_questions(project, batch?)` | open, sent, changed and proposed questions with task title and summary | any member |
+| `get_question(id)` | full text, options, answer history | any member |
+| `answer_question(id, body, source, fingerprint)` | records an answer, `via: mcp`; `proposed` when the caller is an answerer (D21) | any member |
+| `mark_sent(id)`, `drop_question(id, note)`, `accept_answer(id)` | state changes | developer |
+| `cycle_status(project)` | lanes, what is claimable next and why not | developer |
+| `request_start(project, batch_key)` | queues a start request (D24) | developer |
+
+New skill `/taskflow:answers`: walks the open questions one at a time. In Claude Code it also has the plan file and
+the code, so when an answer contradicts the plan's Approach it can re-plan on the spot — the one thing the web form
+cannot do. The skill records only what the user states; it never infers an answer.
+
+Auth, in two steps:
+
+1. **Bearer token** — the plugin's `.mcp.json` points at `${TASKFLOW_URL}/mcp` with
+   `Authorization: Bearer ${TASKFLOW_TOKEN}` (environment expansion). Enough for Claude Code.
+2. **OAuth** — the server acts as an OAuth authorization server for MCP clients and delegates the actual sign-in to
+   GitHub. Needed for a claude.ai custom connector. Use the official MCP SDK's server and auth helpers on the
+   server side (allowed by D13) rather than a hand-written OAuth server. *To confirm in a spike:* the exact
+   requirements claude.ai places on a custom connector (dynamic client registration, callback URL).
+
+## Starting implement from the app
+
+Constraint (F11): Claude Code must run where the user is signed in. The Railway service never runs Claude and never
+sees a Claude credential.
+
+**Tier 0 — Remote Control server mode. Exists today, nothing to build.**
+A standing `claude remote-control` in the project directory (under tmux or pm2). From the Claude phone app: new
+session on that machine, then `/taskflow:implement batch-N`. Prompts and questions are forwarded to the phone. Use
+the default `--spawn same-dir`: the cycle directory is gitignored, so it does not exist inside a spawned worktree,
+and implement creates its own worktree anyway. The dashboard's part: a "Copy start command" action on every Ready
+batch.
+
+**Tier 1 — local runner. The button.**
+`taskflow runner` is a small zero-dependency process on the developer's machine. It holds an *outbound* connection
+to the server (no open port, no tunnel), authenticated with that user's CLI token. "Start" in the dashboard inserts
+a `start_request` row; the runner picks up only its own user's requests for projects configured on that machine,
+validates the batch key against the local index, and launches the unmodified `claude` binary in a detached tmux
+session with Remote Control on and `/taskflow:implement <batch-key>` as the initial prompt. It reports back
+`started | refused | failed` and, if it can be read reliably, the session URL so the button becomes "Open in Claude".
+The claim gate still applies inside the run: a batch with open questions exits 2 and the request shows as refused.
+Launching interactively (not `claude -p`) means implement's remaining prompts reach the phone instead of having to be
+removed. *To confirm in a spike:* a machine-readable way to get the session URL; the permission mode to launch with.
+
+**Tier 2 — cloud routine. Laptop off. Spike before committing.**
+Each developer creates their own routine with an API trigger and stores its fire URL and token in their taskflow
+settings (encrypted at rest with `SECRET_KEY`; this is a trigger token the docs intend for external systems, not a
+Claude login). The routine's saved prompt opts in to reading only a batch key from the fire text. Work it needs:
+`taskflow pull --full` for state *and* config (both gitignored), the plugin's skills available in the clone (not
+confirmed for plugins; vendoring is the fallback), a cached setup script, the Railway domain on the environment's
+network allowlist or all traffic through the MCP connector, branch naming (default `claude/` prefix), and the
+provider connector left out so the status-only rule cannot be bypassed (the status change then happens from the
+laptop or by hand). Costs: research preview, daily run cap, draws the user's subscription usage.
+
+**Ruled out:** Claude credentials or `CLAUDE_CODE_OAUTH_TOKEN` on the server; the Agent SDK on a subscription.
+**Ranked below:** GitHub Actions with `claude-code-action` (documented, but one repository secret is one person's
+subscription, which does not fit several developers, and it needs the same hydration work as a routine); channels
+(research preview, and they feed one long-lived session, where a fresh session per batch is better).
+
+Security of the start channel: D24 (no prompt text), requests expire after 10 minutes, the runner is opt-in per
+machine and per project, every request and outcome lands in `audit_log`. Plans are read from local files, never from
+the server. Answers do come from the server, so implement is told to treat them as quoted data, D21 keeps a developer
+between an answerer and the agent, and the pull request review stays the final human check.
+
+## HTTP surface (additions)
+
+| Route | Auth | Purpose |
+|---|---|---|
+| `GET /auth/github`, `/auth/callback`, `POST /auth/logout` | none / session | sign-in |
+| `PUT /api/sync/cycle`, `PUT /api/sync/blob/<sha>` | token | push |
+| `POST /api/claim`, `POST /api/release` | token | gate + lock |
+| `GET /api/answers?batch=`, `GET /api/questions?task=` | token | pull for implement / triage |
+| `POST /api/answer`, `POST /api/answer/confirm` | session | write an answer; 409 on stale fingerprint |
+| `POST /api/inbox` | session | existing resolution ticks |
+| `POST /api/tokens`, `DELETE /api/tokens/<id>` | session | your own CLI tokens |
+| `GET /api/projects`, `POST /api/projects` | session | projects you belong to; create one |
+| `GET/POST/DELETE /api/projects/<id>/members` | session, project admin | invite by GitHub login, change role, remove |
+| `POST /api/answer/accept` | session, developer | accept an answerer's proposed answer (D21) |
+| `POST /mcp` | token, later OAuth | MCP endpoint (Phase 2) |
+| `POST /api/start` | session, developer | queue a start request (Phase 3) |
+| `GET /api/runner/events`, `POST /api/runner/report` | token | the runner's outbound stream and its status reports (Phase 3) |
+
+Every data route takes a project (path or query) and passes through `authorize(user, project, action)`.
+A project the user does not belong to answers 404, not 403, so its existence does not leak.
+| `GET /api/health` | none | name + version only, no data |
+
+Everything else without a session redirects to sign-in (pages) or returns 401 (API).
+
+Security carried over: CSP, `nosniff`, static allowlist, attachment sandbox CSP, escape-first markdown.
+Changed: Host allowlist and the CSRF Origin check read `PUBLIC_URL`; failed sign-ins and bad tokens are
+rate-limited; every human and CLI write lands in `audit_log`.
+
+## Database
+
+```sql
+app_user(id bigserial primary key, github_id bigint unique, login text, name text, avatar_url text,
+         is_instance_admin boolean, created_at, last_seen_at)
+project(id text primary key, name text, created_by)
+membership(project_id, user_id, role text check (role in ('admin','developer','answerer')),
+           primary key (project_id, user_id))
+invite(project_id, github_login, role, invited_by, created_at)   -- consumed at first sign-in
+
+cycle(id uuid primary key, project_id, user_id, last_triage, dev_head, is_live boolean,
+      snapshot jsonb,           -- index, batch files, summary, enrichment, config subset
+      pushed_at timestamptz, pushed_from text)
+-- unique (project_id, user_id) where is_live
+
+plan_file(cycle_id, task_id, sha256, body text, primary key (cycle_id, task_id))
+blob(sha256 text primary key, content_type, size int, body bytea)
+attachment(cycle_id, task_id, name, sha256 references blob)
+
+question_state(project_id, task_id, key, resolution, fingerprint, title, note, updated_at,
+               primary key (project_id, task_id, key))
+
+answer(id bigserial primary key, project_id, task_id, key,
+       body text, source text,
+       question_fingerprint text, question_text text,   -- what was actually answered
+       idempotency_key text unique,
+       via text check (via in ('web','mcp')),
+       accepted_by bigint references app_user, accepted_at timestamptz,   -- D21; set at insert for developers
+       created_at timestamptz, created_by bigint references app_user)
+-- append-only; latest row per (project_id, task_id, key) wins; the gate reads accepted rows only
+
+start_request(id bigserial primary key, project_id, user_id, batch_key,
+              status text check (status in ('queued','started','refused','failed','expired')),
+              detail jsonb, session_url text, created_at, updated_at)        -- Phase 3
+routine_trigger(user_id, project_id, fire_url text, token_encrypted bytea)  -- Phase 3, Tier 2 only
+
+claim(id bigserial primary key, project_id, cycle_id, batch_key, user_id, host, claimed_at, released_at)
+-- unique (cycle_id, batch_key) where released_at is null
+
+session(id, user_id, expires_at)
+api_token(id, user_id, token_hash, label, created_at, last_used_at, revoked_at)
+audit_log(at, user_id, project_id, action, payload jsonb)
+```
+
+Removing a member revokes their tokens and sessions. Deleting a project cascades to everything under it.
+
+Migrations: numbered `.sql` files applied at boot under a Postgres advisory lock, tracked in `schema_migrations`.
+
+## Railway
+
+- One project, two services: the app (from this repository's root) and Postgres.
+- Variables: `DATABASE_URL` (reference to the Postgres service, private network), `PUBLIC_URL`,
+  `GITHUB_OAUTH_CLIENT_ID`, `GITHUB_OAUTH_CLIENT_SECRET`, `ADMIN_GITHUB_LOGINS`, `SESSION_SECRET`,
+  `SECRET_KEY` (encrypts stored routine tokens; Phase 3).
+  `PORT` is injected by Railway; bind `0.0.0.0`.
+- A Railway template (app + Postgres + the variable prompts) is the install path for other teams (D15).
+- Deploy source: GitHub integration on `rentorious/taskflow`. This needs the local commits pushed.
+  Until then `railway up` from the clone deploys without a push.
+- Postgres backups: enable the scheduled backup on the Postgres service volume. The answers are the only
+  data that cannot be regenerated; everything else re-pushes from the laptop.
+- Healthcheck `/api/health`. Single replica.
+
+## Phases
+
+**Phase 0 — structured questions and a local gate (no infrastructure).**
+triage writes one need per question; status-only patch to triage; `gate.mjs` + tests; `HumanStore`
+interface with the file backend; answer box in the UI; `taskflow claim` against the local store;
+implement uses it. One-off backfill of the four prose questions in the 09-18 cycle.
+*Done when:* implement on a batch with an open blocking question exits 2 and lists it; answering it
+in the local dashboard lets the claim through and the answer shows up next to the plan.
+
+**Phase 1 — hosted, multi-user, phone-first.**
+`server/main.mjs`, Postgres adapters, migrations, GitHub OAuth, users / projects / memberships / invites,
+`authorize()`, CLI tokens, push (with laptop-side enrichment), server-side claim, the phone layout, the
+"Copy start command" action (Tier 0), Railway deploy and template.
+*Done when:* an answer typed on a phone unblocks a claim on the laptop; a second claim of the same batch
+exits 3; a signed-out request to any data route gets no data; a member of project A gets 404 on project B;
+the answering flow passes the phone checks in "Mobile".
+
+**Phase 2 — Claude as an interface.**
+`/mcp` with bearer auth, the tools above, `/taskflow:answers`, the plugin's `.mcp.json`. Then the OAuth
+server and the claude.ai connector. Answerer view and D21 acceptance.
+*Done when:* every open question of a batch can be answered by talking to Claude Code, and the same from the
+Claude phone app; an answerer's answer does not open the gate until accepted.
+
+**Phase 3 — start from the app.**
+`start_request`, `taskflow runner`, the Start button and its states. `taskflow pull --full` (also what makes a
+second machine possible). Then the routine spike, and a go / no-go on Tier 2.
+*Done when:* Start on the phone opens a session on the laptop that shows up in the Claude app; a request for a
+batch with open questions comes back refused with the questions listed; a request carrying anything but a
+valid batch key is rejected by the runner.
+
+**Throughout:** answer history, archive browsing on the server, retention for archived attachments, a device-style
+`taskflow login` to replace pasting a token.
+
+## Out of scope
+
+- Writing anything but a status to the provider.
+- People without a GitHub account (most clients) answering directly. The schema leaves room (`source`,
+  `created_by`); it would need per-question capability links.
+- Running Claude anywhere but the user's own machine or their own Anthropic cloud account.
+- Triggering triage from the dashboard.
+- Offline implement.
+- A shared multi-tenant service (D15).
+
+## Decided with the developer (2026-09-18)
+
+- D10 GitHub sign-in; several users per deployment.
+- D4/D5 no force flag; implement fails closed when the server is unreachable.
+- Phone-first UI.
+
+## Open decisions for the developer
+
+1. D1 split ownership — explained, not yet confirmed.
+2. D15 one deployment per team, versus a shared service.
+3. D21 an answerer's answer needs a developer's acceptance.
+4. D23 tier order, and whether Tier 2 is worth a spike at all.
